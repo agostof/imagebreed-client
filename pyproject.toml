@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imagebreed-client"
+version = "0.1.0"
+description = "Python client for orthomosaic cutouts, vegetation indices, and area-level analytics exports"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "ImageBreed" }
+]
+keywords = ["remote-sensing", "orthomosaic", "geospatial", "vegetation-index", "agriculture"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: GIS",
+]
+dependencies = [
+  "numpy>=1.24",
+  "requests>=2.31",
+  "rasterio>=1.3",
+  "shapely>=2.0",
+  "pillow>=10.0",
+  "matplotlib>=3.8",
+  "pandas>=2.0",
+  "opencv-python>=4.8",
+  "scipy>=1.11",
+  "scikit-image>=0.22",
+  "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "build>=1.2.0",
+  "twine>=5.0.0",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["imagebreed*"]
+

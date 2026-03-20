@@ -1,4 +1,4 @@
-"""imagebreedml unified analytics package."""
+"""imagebreed unified analytics package."""
 
 from .config import OrthoServerConfig
 from .io import download_to_cache, inspect_geotiff, cutout_band_by_polygon, cutout_array_by_polygon, save_cutout

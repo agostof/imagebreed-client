@@ -7,6 +7,18 @@ It is designed for drone and field-imagery workflows where you have:
 - polygon boundaries (GeoJSON), and
 - a need to produce repeatable vegetation metrics and visual outputs.
 
+## Installation
+
+```bash
+pip install .
+```
+
+For editable development installs:
+
+```bash
+pip install -e .[dev]
+```
+
 ## Core capabilities
 
 ### 1) Ortho server connectivity

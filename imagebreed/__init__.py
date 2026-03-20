@@ -15,6 +15,36 @@ from .plot import plot_mask_overlay
 from .api import OrthoCatalog, fetch_ortho_catalog, build_ortho_url, cutout_areas, load_geojson_polygons
 from .vegetation import compute_vegetation_indices, reflectance_to_lab, apply_mask
 from .grid import generate_grid, merge_grids, visualize_grid, export_csv, update_field_coords
+from .legacy_compat import (
+    _download_to_cache,
+    cutout_band_by_polygon_URL_REMOTE,
+    nd_index,
+    make_veg_mask_ndvi,
+    clean_mask,
+    read_band_as_reflectance,
+    get_one_child,
+    get_child_by_name,
+    find_child_feature_dict,
+    find_area_feature_dict,
+    get_children_feature_dicts_for_area,
+    get_metadata_geo_transform_and_scale,
+    ensure_projected_geometry_from_pixelpoints,
+    print_ortho_catalog_summary,
+    list_available_orthos,
+    get_available_bands,
+    get_locator_availability,
+    print_locator_availability,
+    scaled_pixel_points,
+    plot_overlay_at_scale,
+    rescale_pixel_points,
+    scaled_pixel_points_xy,
+    crop_area_cutouts,
+    cutout_children,
+    load_image_from_url,
+    plot_geojson_pixelpoints_on_image,
+    plot_geojson_pixelpoints_on_area_cutout_object,
+    LocatorAvailability,
+)
 
 __all__ = [
     "OrthoServerConfig",
@@ -28,4 +58,11 @@ __all__ = [
     "OrthoCatalog", "fetch_ortho_catalog", "build_ortho_url", "cutout_areas", "load_geojson_polygons",
     "compute_vegetation_indices", "reflectance_to_lab", "apply_mask",
     "generate_grid", "merge_grids", "visualize_grid", "export_csv", "update_field_coords",
+    "_download_to_cache", "cutout_band_by_polygon_URL_REMOTE", "nd_index", "make_veg_mask_ndvi", "clean_mask",
+    "read_band_as_reflectance", "get_one_child", "get_child_by_name", "find_child_feature_dict", "find_area_feature_dict",
+    "get_children_feature_dicts_for_area", "get_metadata_geo_transform_and_scale", "ensure_projected_geometry_from_pixelpoints",
+    "print_ortho_catalog_summary", "list_available_orthos", "get_available_bands", "get_locator_availability",
+    "print_locator_availability", "scaled_pixel_points", "plot_overlay_at_scale", "rescale_pixel_points", "scaled_pixel_points_xy",
+    "crop_area_cutouts", "cutout_children", "load_image_from_url", "plot_geojson_pixelpoints_on_image",
+    "plot_geojson_pixelpoints_on_area_cutout_object", "LocatorAvailability",
 ]

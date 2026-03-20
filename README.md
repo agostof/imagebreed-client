@@ -1,6 +1,6 @@
 # imagebreed-client
 
-`imagebreed-client` is a Python package for downloading orthomosaic bands, extracting area cutouts from GeoJSON polygons, computing vegetation indices, and exporting per-area analytics.
+`imagebreed-client` is a Python package for downloading orthomosaic bands, extracting area cutouts from GeoJSON polygons, computing vegetation indices, and exporting per-area analytics. The polygons are created with the ImageBreedPy web appand server.
 
 It is designed for drone and field-imagery workflows where you have:
 - an ortho server endpoint,

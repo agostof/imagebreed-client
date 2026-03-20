@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from imagebreedml.grid import export_csv, generate_grid, merge_grids, update_field_coords, visualize_grid
+from imagebreed.grid import export_csv, generate_grid, merge_grids, update_field_coords, visualize_grid
 
 
 def single_grid_example(prefix: str = "output"):

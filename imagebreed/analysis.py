@@ -14,11 +14,16 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 import numpy as np
+import pandas as pd
+from rasterio.warp import Resampling, reproject
 
+from .api import build_ortho_url
+from .legacy_compat import find_area_feature_dict, find_child_feature_dict
 from .io import cutout_band_by_polygon
+from .io import cutout_array_by_polygon
 from .indices import (
     ndvi as _ndvi,
     make_vegetation_mask,
@@ -28,10 +33,196 @@ from .indices import (
 )
 from .display import normalize_for_display, rgb_composite
 from .geometry import collect_all_area_features
+from .vegetation import compute_vegetation_indices
 
 logger = logging.getLogger(__name__)
 
 BAND_NAMES = ("red", "green", "blue", "nir")
+
+
+def _extract_area_cutout_and_mask(
+    url_band: str,
+    area_feature: dict[str, Any],
+    area_mask_data: np.ndarray,
+    area_mask_meta: Mapping[str, Any],
+    gj_proj: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Cut out an area band, align to the mask grid, then apply the mask."""
+    band_area, band_area_meta = cutout_band_by_polygon(
+        url_band,
+        area_feature,
+        crs_metadata_source=gj_proj,
+    )
+    band_area_2d = band_area[0]
+
+    src_nodata = band_area_meta.get("nodata", -10000.0)
+    if np.ma.isMaskedArray(band_area_2d):
+        source_array = band_area_2d.filled(src_nodata).astype(np.float32)
+    else:
+        source_array = np.asarray(band_area_2d, dtype=np.float32)
+
+    band_area_aligned = np.full(area_mask_data.shape, src_nodata, dtype=np.float32)
+    reproject(
+        source=source_array,
+        destination=band_area_aligned,
+        src_transform=band_area_meta["transform"],
+        src_crs=band_area_meta["crs"],
+        src_nodata=src_nodata,
+        dst_transform=area_mask_meta["transform"],
+        dst_crs=area_mask_meta["crs"],
+        dst_nodata=src_nodata,
+        resampling=Resampling.bilinear,
+    )
+
+    band_area_aligned[np.isclose(band_area_aligned, src_nodata)] = np.nan
+    band_area_masked = np.where(area_mask_data == 1, band_area_aligned, np.nan)
+
+    band_area_aligned_meta = dict(area_mask_meta)
+    band_area_aligned_meta.update(
+        driver="GTiff",
+        dtype="float32",
+        count=1,
+        nodata=np.nan,
+        height=area_mask_data.shape[0],
+        width=area_mask_data.shape[1],
+    )
+    return band_area_aligned, band_area_masked, band_area_aligned_meta
+
+
+def analyze_field_from_server(
+    server: str,
+    port: int,
+    locator: str,
+    date: str,
+    nodes_all_areas: Mapping[str, list[str]],
+    gj_proj: dict[str, Any],
+    ndvi_thr: float | None = None,
+    precalculated_area_masks: Mapping[str, tuple[np.ndarray, Mapping[str, Any]]] | None = None,
+) -> pd.DataFrame:
+    """
+    Compute vegetation-index summaries for all nodes in all areas from server imagery.
+
+    Parameters
+    ----------
+    server : str
+        Ortho server hostname or IP.
+    port : int
+        Ortho server port.
+    locator : str
+        Locator ID used to resolve imagery URLs.
+    date : str
+        Acquisition date in ``YYYYMMDD`` format.
+    nodes_all_areas : Mapping[str, list[str]]
+        Mapping of ``area_name -> ordered node names`` to process.
+    gj_proj : dict[str, Any]
+        Projected GeoJSON feature collection containing area and child polygons.
+    ndvi_thr : float, optional
+        If provided, adds ``*_thr_avg`` and ``*_thr_median`` columns for pixels
+        where NDVI is valid and strictly greater than this threshold.
+    precalculated_area_masks : Mapping[str, tuple[np.ndarray, Mapping[str, Any]]], optional
+        Optional mapping of ``area_name -> (mask_array, mask_meta)``. When set,
+        masked per-node summaries are also produced as ``*_masked_avg`` and
+        ``*_masked_median`` columns by first reprojecting each area cutout to the
+        mask grid and then applying the binary area mask (mask value ``1`` kept,
+        all other pixels converted to ``NaN``).
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per node with copied node annotation properties plus index summary
+        columns. Aggregations include:
+
+        - ``*_avg`` / ``*_median`` for unmasked node pixels.
+        - ``*_masked_avg`` / ``*_masked_median`` when area masks are provided.
+        - ``*_thr_avg`` / ``*_thr_median`` when ``ndvi_thr`` is provided.
+    """
+    url_red = build_ortho_url(server, port, locator, date, "red", scale=1.0, fmt="cog.tif")
+    url_nir = build_ortho_url(server, port, locator, date, "nir", scale=1.0, fmt="cog.tif")
+    url_green = build_ortho_url(server, port, locator, date, "green", scale=1.0, fmt="cog.tif")
+    url_blue = build_ortho_url(server, port, locator, date, "blue", scale=1.0, fmt="cog.tif")
+    url_rededge = build_ortho_url(server, port, locator, date, "rededge", scale=1.0, fmt="cog.tif")
+
+    series_list: list[pd.Series] = []
+    for area_name in nodes_all_areas.keys():
+        area_poly_count = len(nodes_all_areas[area_name])
+        area_feature = find_area_feature_dict(gj_proj, area_label=area_name)
+
+        node_area_masked: dict[str, tuple[np.ndarray, dict[str, Any]]] = {}
+        if precalculated_area_masks is not None:
+            area_mask_data, area_mask_meta = precalculated_area_masks[area_name]
+            node_area_masked["red"] = _extract_area_cutout_and_mask(url_red, area_feature, area_mask_data, area_mask_meta, gj_proj)[1:]
+            node_area_masked["nir"] = _extract_area_cutout_and_mask(url_nir, area_feature, area_mask_data, area_mask_meta, gj_proj)[1:]
+            node_area_masked["green"] = _extract_area_cutout_and_mask(url_green, area_feature, area_mask_data, area_mask_meta, gj_proj)[1:]
+            node_area_masked["blue"] = _extract_area_cutout_and_mask(url_blue, area_feature, area_mask_data, area_mask_meta, gj_proj)[1:]
+            node_area_masked["rededge"] = _extract_area_cutout_and_mask(url_rededge, area_feature, area_mask_data, area_mask_meta, gj_proj)[1:]
+
+        for node_id in range(area_poly_count):
+            node_name = nodes_all_areas[area_name][node_id]
+            node_poly = find_child_feature_dict(gj_proj, area_label=area_name, child_name=node_name)
+
+            red_cube_subnode, _ = cutout_band_by_polygon(url_red, node_poly)
+            nir_cube_subnode, _ = cutout_band_by_polygon(url_nir, node_poly)
+            green_cube_subnode, _ = cutout_band_by_polygon(url_green, node_poly)
+            blue_cube_subnode, _ = cutout_band_by_polygon(url_blue, node_poly)
+            rededge_cube_subnode, _ = cutout_band_by_polygon(url_rededge, node_poly)
+
+            node_vegetation_indices = compute_vegetation_indices(
+                red_cube_subnode[0],
+                green_cube_subnode[0],
+                blue_cube_subnode[0],
+                nir_cube_subnode[0],
+                rededge_cube_subnode[0],
+            )
+
+            node_vegetation_indices_masked: dict[str, np.ndarray] | None = None
+            if precalculated_area_masks is not None:
+                red_area_masked, red_area_meta = node_area_masked["red"]
+                nir_area_masked, nir_area_meta = node_area_masked["nir"]
+                green_area_masked, green_area_meta = node_area_masked["green"]
+                blue_area_masked, blue_area_meta = node_area_masked["blue"]
+                rededge_area_masked, rededge_area_meta = node_area_masked["rededge"]
+
+                red_cube_subnode_masked, _ = cutout_array_by_polygon(red_area_masked, red_area_meta, node_poly)
+                nir_cube_subnode_masked, _ = cutout_array_by_polygon(nir_area_masked, nir_area_meta, node_poly)
+                green_cube_subnode_masked, _ = cutout_array_by_polygon(green_area_masked, green_area_meta, node_poly)
+                blue_cube_subnode_masked, _ = cutout_array_by_polygon(blue_area_masked, blue_area_meta, node_poly)
+                rededge_cube_subnode_masked, _ = cutout_array_by_polygon(rededge_area_masked, rededge_area_meta, node_poly)
+
+                node_vegetation_indices_masked = compute_vegetation_indices(
+                    red_cube_subnode_masked[0],
+                    green_cube_subnode_masked[0],
+                    blue_cube_subnode_masked[0],
+                    nir_cube_subnode_masked[0],
+                    rededge_cube_subnode_masked[0],
+                )
+
+            node_annotation = node_poly["properties"].copy()
+            node_annotation.pop("pixelPoints", None)
+            node_annotation.pop("_repair", None)
+            datum = pd.Series(node_annotation)
+
+            for index_name, index_subnode in node_vegetation_indices.items():
+                datum[f"{index_name}_avg"] = np.nanmean(index_subnode)
+                datum[f"{index_name}_median"] = np.ma.median(index_subnode)
+
+            if node_vegetation_indices_masked is not None:
+                for index_name, index_subnode_masked in node_vegetation_indices_masked.items():
+                    index_clean = np.ma.masked_invalid(index_subnode_masked)
+                    datum[f"{index_name}_masked_avg"] = np.ma.mean(index_clean)
+                    datum[f"{index_name}_masked_median"] = np.ma.median(index_clean)
+
+            if ndvi_thr is not None:
+                ndvi_subnode = np.ma.masked_invalid(node_vegetation_indices["ndvi"].copy())
+                mask_veg = (~np.ma.getmaskarray(ndvi_subnode)) & (ndvi_subnode > ndvi_thr)
+                for index_name, index_subnode in node_vegetation_indices.items():
+                    index_clean = np.ma.masked_invalid(index_subnode)
+                    index_thr = index_clean[mask_veg]
+                    datum[f"{index_name}_thr_avg"] = np.ma.filled(np.ma.mean(index_thr), np.nan)
+                    datum[f"{index_name}_thr_median"] = np.ma.filled(np.ma.median(index_thr), np.nan)
+
+            series_list.append(datum)
+
+    return pd.DataFrame(series_list)
 
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ import os
 from collections import defaultdict
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import requests
 from PIL import Image
@@ -28,11 +28,7 @@ class OrthoCatalog:
     locators_by_band: Dict[str, List[str]]
 
 
-def fetch_ortho_catalog(server: str, port: int = 9001, timeout: int = 30) -> OrthoCatalog:
-    url = f"http://{server}:{port}/api/orthos"
-    response = requests.get(url, timeout=timeout)
-    response.raise_for_status()
-    payload_raw = response.json()
+def _build_catalog(endpoint: str, payload_raw: Any) -> OrthoCatalog:
     payload = payload_raw if isinstance(payload_raw, list) else payload_raw.get("orthos", [])
 
     by_locator = defaultdict(list)
@@ -55,7 +51,7 @@ def fetch_ortho_catalog(server: str, port: int = 9001, timeout: int = 30) -> Ort
             dates_by_locator[locator].add(date)
 
     return OrthoCatalog(
-        endpoint=url,
+        endpoint=endpoint,
         count=len(payload),
         raw=list(payload),
         by_locator=dict(by_locator),
@@ -63,6 +59,61 @@ def fetch_ortho_catalog(server: str, port: int = 9001, timeout: int = 30) -> Ort
         dates_by_locator={k: sorted(v) for k, v in dates_by_locator.items()},
         locators_by_band={k: sorted(v) for k, v in locators_by_band.items()},
     )
+
+
+@dataclass
+class OrthoAPIClient:
+    """
+    Small stateful API client that keeps a persistent HTTP session.
+
+    Useful for repeated catalog and file URL access in long-running workflows.
+    """
+
+    server: str
+    port: int = 9001
+    timeout: int = 30
+    session: Optional[requests.Session] = None
+
+    def __post_init__(self) -> None:
+        if self.session is None:
+            self.session = requests.Session()
+
+    @property
+    def base_url(self) -> str:
+        return f"http://{self.server}:{self.port}"
+
+    def fetch_ortho_catalog(self) -> OrthoCatalog:
+        endpoint = f"{self.base_url}/api/orthos"
+        response = self.session.get(endpoint, timeout=self.timeout)
+        response.raise_for_status()
+        return _build_catalog(endpoint, response.json())
+
+    def build_ortho_url(
+        self,
+        locator: str,
+        date: str,
+        band: str,
+        scale: float | None = None,
+        fmt: str = "tif",
+    ) -> str:
+        return build_ortho_url(self.server, self.port, locator, date, band, scale=scale, fmt=fmt)
+
+    def close(self) -> None:
+        self.session.close()
+
+    def __enter__(self) -> "OrthoAPIClient":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+
+def fetch_ortho_catalog(server: str, port: int = 9001, timeout: int = 30) -> OrthoCatalog:
+    url = f"http://{server}:{port}/api/orthos"
+    response = requests.get(url, timeout=timeout)
+    response.raise_for_status()
+    payload_raw = response.json()
+    return _build_catalog(url, payload_raw)
 
 
 def build_ortho_url(server: str, port: int, locator: str, date: str, band: str, scale: float | None = None, fmt: str = "tif") -> str:
@@ -111,3 +162,4 @@ def cutout_areas(polys, image_url: str, *, target_scale: float, pad_px: int = 50
         bbox = clamp_bbox(bbox_from_points(scaled, pad=pad_px), img.width, img.height)
         out[label] = img.crop(bbox)
     return out
+

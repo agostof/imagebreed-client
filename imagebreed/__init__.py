@@ -1,4 +1,4 @@
-"""imagebreedml unified analytics package."""
+"""imagebreed unified analytics package."""
 
 from .config import OrthoServerConfig
 from .io import download_to_cache, inspect_geotiff, cutout_band_by_polygon, cutout_array_by_polygon, save_cutout
@@ -10,9 +10,25 @@ from .analysis import AreaResult, process_all_areas, analyze_field_from_server
 from .export import results_to_csv, results_to_dataframe, append_results_to_csv
 from .raster_mask import reproject_to_reference, png_blue_to_mask, save_mask_geotiff
 from .plot import plot_mask_overlay
+from .mask_transfer import (
+    MaskTransferConfig,
+    MaskTransferResult,
+    MaskTransferPipelineConfig,
+    MaskProjectionArtifacts,
+    export_mask_as_geotiff,
+    confirm_saved_mask,
+    save_mask_overlay_png,
+    save_overlay_rgb,
+    validate_mask_grid,
+    extract_area_cutout_and_mask,
+    run_mask_transfer,
+    build_mask_transfer_config,
+    run_mask_transfer_pipeline,
+    run_mask_projection_only,
+)
 
 # Consolidated legacy domains
-from .api import OrthoCatalog, fetch_ortho_catalog, build_ortho_url, cutout_areas, load_geojson_polygons
+from .api import OrthoCatalog, OrthoAPIClient, fetch_ortho_catalog, build_ortho_url, cutout_areas, load_geojson_polygons
 from .vegetation import compute_vegetation_indices, reflectance_to_lab, apply_mask
 from .grid import generate_grid, merge_grids, visualize_grid, export_csv, update_field_coords
 from .legacy_compat import (
@@ -55,7 +71,10 @@ __all__ = [
     "normalize_for_display", "rgb_composite", "false_color_composite", "apply_mask_overlay", "apply_mask_blackout", "draw_contours",
     "AreaResult", "process_all_areas", "analyze_field_from_server", "results_to_csv", "results_to_dataframe", "append_results_to_csv",
     "reproject_to_reference", "png_blue_to_mask", "save_mask_geotiff", "plot_mask_overlay",
-    "OrthoCatalog", "fetch_ortho_catalog", "build_ortho_url", "cutout_areas", "load_geojson_polygons",
+    "MaskTransferConfig", "MaskTransferResult", "MaskTransferPipelineConfig", "MaskProjectionArtifacts", "export_mask_as_geotiff", "confirm_saved_mask",
+    "save_mask_overlay_png", "save_overlay_rgb", "validate_mask_grid", "extract_area_cutout_and_mask", "run_mask_transfer",
+    "build_mask_transfer_config", "run_mask_transfer_pipeline", "run_mask_projection_only",
+    "OrthoCatalog", "OrthoAPIClient", "fetch_ortho_catalog", "build_ortho_url", "cutout_areas", "load_geojson_polygons",
     "compute_vegetation_indices", "reflectance_to_lab", "apply_mask",
     "generate_grid", "merge_grids", "visualize_grid", "export_csv", "update_field_coords",
     "_download_to_cache", "cutout_band_by_polygon_URL_REMOTE", "nd_index", "make_veg_mask_ndvi", "clean_mask",

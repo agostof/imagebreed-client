@@ -49,20 +49,17 @@ def reproject_to_reference(
     dst_nodata: float | int | None = None,
 ) -> np.ndarray:
     """
-    Reproject a 2D raster array onto a reference grid.
+    Reproject a 2D or 3D raster array onto a reference grid.
 
     Parameters
     ----------
     source_array : np.ndarray
-        2D source raster
+        2D source raster (H, W) or 3D raster (bands, H, W)
     source_meta : dict
         Must include transform, crs, and optional nodata
     reference_meta : dict
         Must include transform, crs, width, height
     """
-    # if source_array.ndim != 2 or source_array.ndim != 2:
-    #     raise ValueError(f"source_array must be 2D, got shape={source_array.shape}")
-
     required_src = ("transform", "crs")
     required_ref = ("transform", "crs", "width", "height")
 
@@ -74,21 +71,36 @@ def reproject_to_reference(
         if k not in reference_meta or reference_meta[k] is None:
             raise ValueError(f"reference_meta missing required key: {k}")
 
-    if dst_nodata is None:
-        dst_nodata = source_meta.get("nodata", np.nan)
+    src_nodata = source_meta.get("nodata")
+    src = source_array
+    if np.ma.isMaskedArray(src):
+        if src_nodata is None:
+            src_nodata = np.nan if np.issubdtype(src.dtype, np.floating) else 0
+        src = src.filled(src_nodata)
+    else:
+        src = np.asarray(src)
 
-    dst = np.full(
-        (int(reference_meta["height"]), int(reference_meta["width"])),
-        dst_nodata,
-        dtype=source_array.dtype,
-    )
+    if dst_nodata is None:
+        if src_nodata is not None:
+            dst_nodata = src_nodata
+        else:
+            dst_nodata = np.nan if np.issubdtype(src.dtype, np.floating) else 0
+
+    ref_h = int(reference_meta["height"])
+    ref_w = int(reference_meta["width"])
+    if src.ndim == 2:
+        dst = np.full((ref_h, ref_w), dst_nodata, dtype=src.dtype)
+    elif src.ndim == 3:
+        dst = np.full((src.shape[0], ref_h, ref_w), dst_nodata, dtype=src.dtype)
+    else:
+        raise ValueError(f"source_array must be 2D or 3D, got shape={src.shape}")
 
     reproject(
-        source=source_array,
+        source=src,
         destination=dst,
         src_transform=source_meta["transform"],
         src_crs=source_meta["crs"],
-        src_nodata=source_meta.get("nodata"),
+        src_nodata=src_nodata,
         dst_transform=reference_meta["transform"],
         dst_crs=reference_meta["crs"],
         dst_nodata=dst_nodata,

@@ -49,7 +49,7 @@ def test_extract_area_cutout_and_mask_applies_mask_and_propagates_reference_grid
         lambda source_array, source_meta, reference_meta, **_k: source_array.copy(),
     )
 
-    aligned, masked, aligned_meta = extract_area_cutout_and_mask(
+    aligned, masked, aligned_meta, masked_meta = extract_area_cutout_and_mask(
         url_band="https://example.test/nir.tif",
         area_feature={"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}},
         area_mask_data=area_mask_data,
@@ -96,7 +96,7 @@ def test_extract_area_cutout_and_mask_empty_mask_returns_all_nan(monkeypatch: py
         lambda source_array, source_meta, reference_meta, **_k: source_array.copy(),
     )
 
-    _aligned, masked, _meta = extract_area_cutout_and_mask(
+    _aligned, masked, _aligned_meta, masked_meta = extract_area_cutout_and_mask(
         url_band="https://example.test/nir.tif",
         area_feature={"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}},
         area_mask_data=area_mask_data,

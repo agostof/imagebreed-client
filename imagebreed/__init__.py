@@ -9,7 +9,7 @@ from .display import normalize_for_display, rgb_composite, false_color_composite
 from .analysis import AreaResult, process_all_areas, analyze_field_from_server
 from .export import results_to_csv, results_to_dataframe, append_results_to_csv
 from .raster_mask import reproject_to_reference, png_blue_to_mask, save_mask_geotiff
-from .plot import plot_mask_overlay
+from .plot import plot_mask_overlay, plot_masked
 from .mask_transfer import (
     MaskTransferConfig,
     MaskTransferResult,
@@ -17,6 +17,7 @@ from .mask_transfer import (
     MaskProjectionArtifacts,
     export_mask_as_geotiff,
     confirm_saved_mask,
+    confirm_saved_mask_overlay,
     save_mask_overlay_png,
     save_overlay_rgb,
     validate_mask_grid,
@@ -70,8 +71,8 @@ __all__ = [
     "ndvi", "gndvi", "ndre", "evi", "savi", "msavi", "gli", "make_vegetation_mask", "make_vegetation_mask_msavi", "apply_vegetation_mask", "MsaviMaskResult", "BUILTIN_INDICES",
     "normalize_for_display", "rgb_composite", "false_color_composite", "apply_mask_overlay", "apply_mask_blackout", "draw_contours",
     "AreaResult", "process_all_areas", "analyze_field_from_server", "results_to_csv", "results_to_dataframe", "append_results_to_csv",
-    "reproject_to_reference", "png_blue_to_mask", "save_mask_geotiff", "plot_mask_overlay",
-    "MaskTransferConfig", "MaskTransferResult", "MaskTransferPipelineConfig", "MaskProjectionArtifacts", "export_mask_as_geotiff", "confirm_saved_mask",
+    "reproject_to_reference", "png_blue_to_mask", "save_mask_geotiff", "plot_mask_overlay", "plot_masked",
+    "MaskTransferConfig", "MaskTransferResult", "MaskTransferPipelineConfig", "MaskProjectionArtifacts", "export_mask_as_geotiff", "confirm_saved_mask", "confirm_saved_mask_overlay",
     "save_mask_overlay_png", "save_overlay_rgb", "validate_mask_grid", "extract_area_cutout_and_mask", "run_mask_transfer",
     "build_mask_transfer_config", "run_mask_transfer_pipeline", "run_mask_projection_only",
     "OrthoCatalog", "OrthoAPIClient", "fetch_ortho_catalog", "build_ortho_url", "cutout_areas", "load_geojson_polygons",

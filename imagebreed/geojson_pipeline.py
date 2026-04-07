@@ -1,5 +1,7 @@
 """
-ortho_geojson_pipeline.py
+geojson_pipeline.py
+formerly ortho_geojson_pipeline.py
+
 
 A pipeline-friendly GeoJSON parser + raster cutout helpers.
 
@@ -46,6 +48,21 @@ import math
 
 # Optional shapely integration for geo area/bbox
 def _try_import_shapely_shape():
+    """
+    Try importing ``shapely.geometry.shape``.
+
+    Returns
+    -------
+    callable or None
+        The imported ``shape`` callable when Shapely is available.
+        Returns ``None`` when import fails for any reason.
+
+    Notes
+    -----
+    This helper intentionally suppresses import errors so the module can be
+    used without Shapely. Shapely-dependent operations validate availability
+    at runtime and raise explicit errors where required.
+    """
     try:
         from shapely.geometry import shape  # type: ignore
         return shape
@@ -62,24 +79,62 @@ JSONDict = Dict[str, Any]
 # ---------------------------
 
 def _as_path(path: Union[str, Path]) -> Path:
+    """
+    Normalize a filesystem path to ``pathlib.Path``.
+
+    Parameters
+    ----------
+    path : str or Path
+        Input path value.
+
+    Returns
+    -------
+    Path
+        ``Path`` object for the provided input.
+    """
     return path if isinstance(path, Path) else Path(path)
 
 
 class PixelPoint(NamedTuple):
+    """
+    Pixel-space point represented by integer coordinates.
+
+    Attributes
+    ----------
+    x : int
+        Horizontal pixel coordinate.
+    y : int
+        Vertical pixel coordinate.
+    """
     x: int
     y: int
 
 
 def _normalize_pixel_points(obj: Any) -> Optional[List[PixelPoint]]:
     """
-    Normalize "pixelPoints" into List[PixelPoint].
+    Normalize raw ``pixelPoints`` payloads into ``List[PixelPoint]``.
 
-    Supports:
-    - [{"x": 1, "y": 2}, ...]
-    - [[x, y], ...]
-    - {"points": [...]}  (rare wrapper)
+    Parameters
+    ----------
+    obj : Any
+        Raw pixel-point payload read from feature properties.
 
-    Returns None if missing or not parseable.
+    Returns
+    -------
+    list[PixelPoint] or None
+        Parsed points as integer ``(x, y)`` values, or ``None`` when the input
+        is missing, empty, or not parseable.
+
+    Notes
+    -----
+    Supported input forms include:
+
+    - ``[{"x": 1, "y": 2}, ...]``
+    - ``[[x, y], ...]``
+    - ``{"points": [...]} `` (rare wrapper)
+
+    Parsing is strict per element shape; malformed elements cause the function
+    to return ``None``.
     """
     if obj is None:
         return None
@@ -112,7 +167,23 @@ def _normalize_pixel_points(obj: Any) -> Optional[List[PixelPoint]]:
 
 
 def _coords_to_rings_polygon(coords: Any) -> List[List[Tuple[float, float]]]:
-    """Convert GeoJSON Polygon coordinates -> list of rings -> list of (x,y) floats."""
+    """
+    Convert GeoJSON Polygon coordinates into float coordinate rings.
+
+    Parameters
+    ----------
+    coords : Any
+        GeoJSON Polygon ``coordinates`` payload.
+
+    Returns
+    -------
+    list[list[tuple[float, float]]]
+        Parsed rings where each ring is a list of ``(x, y)`` float tuples.
+
+    Notes
+    -----
+    Invalid rings/points are skipped rather than raising errors.
+    """
     rings: List[List[Tuple[float, float]]] = []
     if not isinstance(coords, list):
         return rings
@@ -137,21 +208,49 @@ def _coords_to_rings_polygon(coords: Any) -> List[List[Tuple[float, float]]]:
 @dataclass
 class PolygonFeature:
     """
-    Wrapper for a GeoJSON Feature.
+    Wrapper for a GeoJSON Feature with convenience accessors.
 
-    Extracted convenience fields:
-    - id: stable id (properties['polygonId'] if present else feature index)
-    - name, areaId, parentId: common fields
-    - kind: e.g. "metadata" for the metadata feature
+    Attributes
+    ----------
+    id : str or int
+        Stable feature identifier (commonly ``properties['polygonId']`` or
+        fallback index from loader).
+    geometry : dict[str, Any]
+        Raw GeoJSON geometry payload (Polygon or MultiPolygon).
+    properties : dict[str, Any]
+        Mutable feature properties dictionary.
+    name : str or None
+        Feature display name from properties when available.
+    areaId : str or None
+        Area identifier used for hierarchy/grouping.
+    parentId : Any
+        Parent feature identifier. Area roots usually have ``None``.
+    kind : str or None
+        Feature kind label (for example ``"metadata"``).
+    feature_type : str
+        GeoJSON feature type, usually ``"Feature"``.
+    annotations_key : str
+        Property key used by ``annotations`` accessor.
+    pixel_points_key : str
+        Property key used by ``pixel_points`` accessor.
 
-    Raw editable fields:
-    - properties: dict (editable)
-    - geometry: raw GeoJSON geometry dict (Polygon or MultiPolygon)
+    Notes
+    -----
+    Convenience extracted fields include ``id``, ``name``, ``areaId``,
+    ``parentId``, and ``kind``.
 
-    Pixel points:
-    - from properties[pixel_points_key], default "pixelPoints"
-    - pixel_points normalized to List[PixelPoint]
-    - pixel_ring() returns integer ring (optionally scaled only if scale is not None)
+    Raw editable fields are ``properties`` and ``geometry``.
+
+    Pixel points are read from ``properties[pixel_points_key]`` and normalized
+    to ``list[PixelPoint]`` when possible.
+
+    Scaling in pixel helpers is applied only when ``scale is not None``.
+    This prevents accidental coordinate changes when scale is unspecified.
+
+    Classification semantics:
+
+    - metadata features: ``properties.kind == 'metadata'``
+    - area roots: ``parentId is None`` and feature is not metadata
     """
     id: Union[str, int]
     geometry: JSONDict
@@ -168,6 +267,7 @@ class PolygonFeature:
     pixel_points_key: str = "pixelPoints"
 
     def __post_init__(self) -> None:
+        """Populate convenience fields from ``properties`` when missing."""
         if self.kind is None:
             self.kind = self.properties.get("kind")
         if self.name is None:
@@ -183,10 +283,12 @@ class PolygonFeature:
 
     @property
     def is_metadata(self) -> bool:
+        """Return True when feature kind is ``"metadata"``."""
         return self.kind == "metadata"
 
     @property
     def is_area_root(self) -> bool:
+        """Return True when feature is a non-metadata root (``parentId is None``)."""
         # area defining roots have parentId None AND are not metadata
         return (self.parentId is None) and (not self.is_metadata)
 
@@ -194,6 +296,16 @@ class PolygonFeature:
 
     @property
     def annotations(self) -> Any:
+        """
+        Get annotation payload from configured or fallback property keys.
+
+        Returns
+        -------
+        Any
+            Annotation value from ``annotations_key`` if present, otherwise
+            first match in fallback keys ``annotation``, ``labels``, ``label``,
+            or ``tags``. Returns None when no key exists.
+        """
         if self.annotations_key in self.properties:
             return self.properties.get(self.annotations_key)
         for k in ("annotation", "labels", "label", "tags"):
@@ -202,15 +314,18 @@ class PolygonFeature:
         return None
 
     def set_annotation_key(self, key: str) -> None:
+        """Set property key used by ``annotations`` accessor."""
         self.annotations_key = key
 
     # ---- pixel points ----
 
     @property
     def pixel_points(self) -> Optional[List[PixelPoint]]:
+        """Return normalized pixel points from ``properties[pixel_points_key]``."""
         return _normalize_pixel_points(self.properties.get(self.pixel_points_key))
 
     def set_pixel_points_key(self, key: str) -> None:
+        """Set property key used by ``pixel_points`` accessor."""
         self.pixel_points_key = key
 
     def pixel_ring(
@@ -222,15 +337,33 @@ class PolygonFeature:
         closed: bool = False,
     ) -> Optional[List[Tuple[int, int]]]:
         """
-        Integer (x,y) ring from pixelPoints.
+        Build integer ring coordinates from ``pixelPoints``.
 
-        Scaling is applied ONLY if scale is not None.
-        This prevents accidentally changing coordinates when you don't intend to.
+        Parameters
+        ----------
+        scale : float or None, optional
+            Optional scaling factor. Scaling is applied only when not None.
+        offset_xy : tuple[int, int], default=(0, 0)
+            Pixel offset added after optional scaling.
+        round_mode : {"round", "floor", "ceil"}, default="round"
+            Integer conversion mode:
 
-        round_mode:
-          - "round" (recommended)
-          - "floor" (shrinks polygon slightly)
-          - "ceil"  (expands polygon slightly)
+            - ``round``: recommended default
+            - ``floor``: tends to shrink polygon
+            - ``ceil``: tends to expand polygon
+        closed : bool, default=False
+            If True, appends first vertex at end when ring is not already
+            closed.
+
+        Returns
+        -------
+        list[tuple[int, int]] or None
+            Integer ring, or None when pixel points are missing/insufficient.
+
+        Raises
+        ------
+        ValueError
+            If ``round_mode`` is invalid.
         """
         pts = self.pixel_points
         if not pts or len(pts) < 3:
@@ -272,6 +405,7 @@ class PolygonFeature:
         offset_xy: Tuple[int, int] = (0, 0),
         round_mode: str = "round",
     ) -> Optional[Tuple[int, int, int, int]]:
+        """Return inclusive pixel bounding box from ``pixel_ring``."""
         ring = self.pixel_ring(scale=scale, offset_xy=offset_xy, round_mode=round_mode, closed=False)
         if not ring:
             return None
@@ -282,6 +416,7 @@ class PolygonFeature:
     # ---- geo coordinates ----
 
     def geo_rings(self) -> List[List[Tuple[float, float]]]:
+        """Return geometry rings as float ``(x, y)`` coordinates."""
         geom = self.geometry or {}
         gtype = geom.get("type")
         coords = geom.get("coordinates")
@@ -300,15 +435,18 @@ class PolygonFeature:
     # ---- optional shapely helpers ----
 
     def shapely(self):
+        """Return Shapely geometry for this feature, or None if unavailable."""
         if _SHAPE is None:
             return None
         return _SHAPE(self.geometry)
 
     def area(self) -> Optional[float]:
+        """Return feature geometry area when Shapely is available."""
         g = self.shapely()
         return None if g is None else float(g.area)
 
     def bbox(self) -> Optional[Tuple[float, float, float, float]]:
+        """Return geometry bounds ``(minx, miny, maxx, maxy)`` when available."""
         g = self.shapely()
         if g is None:
             return None
@@ -318,6 +456,14 @@ class PolygonFeature:
     # ---- serialization ----
 
     def to_geojson_feature(self) -> JSONDict:
+        """
+        Serialize feature to GeoJSON dict.
+
+        Notes
+        -----
+        Convenience fields (``name``, ``areaId``, ``parentId``, ``kind``) are
+        synchronized back into ``properties`` before serialization.
+        """
         # sync convenience fields back into properties
         if self.name is not None:
             self.properties["name"] = self.name
@@ -337,17 +483,40 @@ class PolygonFeature:
 @dataclass
 class PolygonCollection:
     """
-    Container for PolygonFeature objects.
+    Container for ``PolygonFeature`` objects with filtering and serialization.
 
-    - Filtering:
-        only_metadata(), area_roots(), remove_area_roots(), children_only(), with_parent()
-        filter_annotations(...)
-    - Editing:
-        map(...)
-    - Dataset metadata:
-        metadata_feature(), dataset_metadata()
-    - Serialization:
-        to_geojson(), save()
+    Attributes
+    ----------
+    features : list[PolygonFeature]
+        Feature objects in collection order.
+    crs : dict[str, Any] or None
+        Optional GeoJSON CRS object.
+    metadata : dict[str, Any]
+        Extra top-level FeatureCollection keys preserved during load/save.
+    default_annotations_key : str
+        Default annotations property key applied to features.
+    default_pixel_points_key : str
+        Default pixel-points property key applied to features.
+
+    Notes
+    -----
+    Available filter helpers include:
+
+    - ``only_metadata()``
+    - ``area_roots()``
+    - ``remove_area_roots(keep_metadata=...)``
+    - ``children_only(keep_metadata=...)``
+    - ``with_parent(parent_id)``
+    - ``filter_annotations(...)``
+
+    Editing and serialization helpers include ``map(...)``, ``to_geojson()``,
+    and ``save(...)``.
+
+    Filtering methods return a new ``PolygonCollection`` with a new list
+    container, but feature objects are shared (shallow copy behavior).
+
+    Dataset metadata feature semantics are based on ``kind == 'metadata'`` and
+    are distinct from area root polygons.
     """
     features: List[PolygonFeature] = field(default_factory=list)
     crs: Optional[JSONDict] = None
@@ -357,40 +526,55 @@ class PolygonCollection:
     default_pixel_points_key: str = "pixelPoints"
 
     def __post_init__(self) -> None:
+        """Apply default annotation/pixel-point keys to all contained features."""
         for f in self.features:
             f.annotations_key = self.default_annotations_key
             f.pixel_points_key = self.default_pixel_points_key
 
     def __len__(self) -> int:
+        """Return number of features in collection."""
         return len(self.features)
 
     def __iter__(self) -> Iterator[PolygonFeature]:
+        """Iterate over features preserving collection order."""
         return iter(self.features)
 
     def by_id(self, feature_id: Union[str, int]) -> PolygonFeature:
+        """Return feature by id, or raise KeyError when not found."""
         for f in self.features:
             if f.id == feature_id:
                 return f
         raise KeyError(f"Feature id not found: {feature_id!r}")
 
     def index(self) -> Dict[Union[str, int], PolygonFeature]:
+        """Return dictionary index mapping feature id to feature object."""
         return {f.id: f for f in self.features}
 
     # ---- metadata ----
 
     def metadata_feature(self) -> Optional[PolygonFeature]:
+        """Return first metadata feature (``kind == 'metadata'``), if any."""
         for f in self.features:
             if f.is_metadata:
                 return f
         return None
 
     def dataset_metadata(self) -> Optional[Dict[str, Any]]:
+        """Return metadata feature properties, or None if no metadata feature."""
         mf = self.metadata_feature()
         return None if mf is None else mf.properties
 
     # ---- filtering ----
 
     def filter(self, predicate: Callable[[PolygonFeature], bool]) -> "PolygonCollection":
+        """
+        Return filtered view as a new ``PolygonCollection``.
+
+        Notes
+        -----
+        The returned collection shares feature objects with the original
+        collection (shallow copy semantics).
+        """
         return PolygonCollection(
             features=[f for f in self.features if predicate(f)],
             crs=self.crs,
@@ -400,22 +584,27 @@ class PolygonCollection:
         )
 
     def only_metadata(self) -> "PolygonCollection":
+        """Return collection containing only metadata features."""
         return self.filter(lambda f: f.is_metadata)
 
     def area_roots(self) -> "PolygonCollection":
+        """Return collection containing only area root features."""
         return self.filter(lambda f: f.is_area_root)
 
     def remove_area_roots(self, *, keep_metadata: bool = True) -> "PolygonCollection":
+        """Return collection without area roots, optionally retaining metadata."""
         if keep_metadata:
             return self.filter(lambda f: (not f.is_area_root) or f.is_metadata)
         return self.filter(lambda f: (not f.is_area_root) and (not f.is_metadata))
 
     def children_only(self, *, keep_metadata: bool = True) -> "PolygonCollection":
+        """Return features with ``parentId is not None``, optionally keeping metadata."""
         if keep_metadata:
             return self.filter(lambda f: (f.parentId is not None) or f.is_metadata)
         return self.filter(lambda f: f.parentId is not None)
 
     def with_parent(self, parent_id: Any) -> "PolygonCollection":
+        """Return child features whose ``parentId`` equals ``parent_id``."""
         return self.filter(lambda f: f.parentId == parent_id)
 
     def filter_annotations(
@@ -425,6 +614,18 @@ class PolygonCollection:
         annotation_key: Optional[str] = None,
         keep_if_missing: bool = False,
     ) -> "PolygonCollection":
+        """
+        Filter features by annotation predicate.
+
+        Parameters
+        ----------
+        predicate : Callable[[Any], bool]
+            Predicate evaluated on annotation value.
+        annotation_key : str or None, optional
+            Override annotations property key for this call.
+        keep_if_missing : bool, default=False
+            If True, keep features with missing annotation values.
+        """
         key = annotation_key or self.default_annotations_key
 
         def _p(f: PolygonFeature) -> bool:
@@ -439,22 +640,33 @@ class PolygonCollection:
     # ---- editing ----
 
     def set_annotations_key(self, key: str) -> None:
+        """Set default annotations key and propagate it to all features."""
         self.default_annotations_key = key
         for f in self.features:
             f.annotations_key = key
 
     def set_pixel_points_key(self, key: str) -> None:
+        """Set default pixel-points key and propagate it to all features."""
         self.default_pixel_points_key = key
         for f in self.features:
             f.pixel_points_key = key
 
     def map(self, fn: Callable[[PolygonFeature], None]) -> None:
+        """Apply mutating or read-only function to each feature in order."""
         for f in self.features:
             fn(f)
 
     # ---- serialization ----
 
     def to_geojson(self) -> JSONDict:
+        """
+        Serialize collection back into FeatureCollection JSON dict.
+
+        Notes
+        -----
+        Top-level metadata keys are preserved except reserved keys
+        ``type``, ``features``, and ``crs`` which are regenerated.
+        """
         fc: JSONDict = {
             "type": "FeatureCollection",
             "features": [f.to_geojson_feature() for f in self.features],
@@ -469,6 +681,7 @@ class PolygonCollection:
         return fc
 
     def save(self, path: Union[str, Path], *, indent: int = 2) -> None:
+        """Write collection as GeoJSON to disk."""
         path = _as_path(path)
         with path.open("w", encoding="utf-8") as f:
             json.dump(self.to_geojson(), f, ensure_ascii=False, indent=indent)
@@ -485,12 +698,41 @@ def repair_area_hierarchy_by_containment(
     add_repair_notes: bool = True,
 ) -> Dict[str, int]:
     """
-    Repair malformed area hierarchy:
-    - Ensure root area polygons have unique areaId/name matching metadata.areas (if available).
-    - Reassign every non-root feature to the root polygon that contains it (via representative point).
-    - Fixes bad parentId (e.g., child->child, self-parent) and missing/incorrect areaId.
+    Repair malformed parent/area hierarchy using geometric containment.
 
-    Requires shapely.
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to repair in place.
+    order : {"x", "y"}, default="x"
+        Sort order for roots when applying metadata-based renaming.
+
+        - ``"x"``: left-to-right by representative-point x
+        - ``"y"``: top-to-bottom by representative-point y
+    add_repair_notes : bool, default=True
+        If True, writes ``_repair`` annotations into feature properties with
+        previous parent/root metadata values.
+
+    Returns
+    -------
+    dict[str, int]
+        Summary dictionary with keys:
+
+        - ``roots``: number of root polygons considered
+        - ``reassigned``: number of non-root features reassigned to containing roots
+        - ``renamed_roots``: number of roots renamed to match metadata.areas
+
+    Raises
+    ------
+    ImportError
+        If Shapely is not available.
+
+    Notes
+    -----
+    Child reassignment is based on each feature representative point, not
+    centroid.
+
+    Features that are not inside any root polygon are left unchanged.
     """
     if not _SHAPE:
         raise ImportError("repair_area_hierarchy_by_containment requires shapely")
@@ -591,6 +833,27 @@ def validate_children_counts(
     tolerance: int = 10,           # allow +/- 10 by default
     as_error: bool = True,
 ) -> "ValidationReport":
+    """
+    Validate approximate child counts per root area.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to inspect.
+    expected_per_area : int, default=80
+        Expected nominal number of child features per root area.
+    tolerance : int, default=10
+        Allowed deviation from expected count (inclusive).
+    as_error : bool, default=True
+        If True, out-of-range counts are recorded as errors; otherwise as
+        warnings.
+
+    Returns
+    -------
+    ValidationReport
+        Validation result with per-root counts in ``stats['children_per_root']``
+        and count of orphan children in ``stats['orphans_children']``.
+    """
     rep = ValidationReport(ok=True)
 
     roots = list(polys.area_roots())
@@ -638,13 +901,28 @@ def find_orphan_children(
     """
     Find child features with invalid parent linkage.
 
-    Orphan criteria:
-      - non-metadata feature with parentId != None, and
-      - parentId does not exist in file, OR
-      - parentId exists but is not an area root, OR
-      - self-parent (parentId == id)
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to inspect.
 
-    Returns a list of records with feature id and reason.
+    Returns
+    -------
+    list[dict[str, Any]]
+        One record per orphan with keys ``id``, ``parentId``, ``areaId``,
+        ``name``, and ``reason``.
+
+    Notes
+    -----
+    Orphan criteria (exactly as implemented):
+
+    - non-metadata feature with ``parentId is not None`` and
+    - parentId missing from file, or
+    - parentId exists but is not a root, or
+    - self-parent (``parentId == id``)
+
+    ``reason`` is one of ``self_parent``, ``missing_parent``, or
+    ``parent_not_root``.
     """
     idx = polys.index()
     root_ids = {r.id for r in polys.area_roots()}
@@ -684,13 +962,30 @@ def remediate_orphan_children(
     mark_field: str = "orphanDetected",
 ) -> Dict[str, Any]:
     """
-    Optionally mark and/or delete orphan children.
+    Mark and/or delete orphan children.
 
-    Behavior:
-      - mark=True: add repair annotation on each orphan feature
-      - delete=True: remove orphan features from polys.features
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to mutate.
+    mark : bool, default=True
+        If True, append orphan annotations under ``properties['_repair']``.
+    delete : bool, default=False
+        If True, remove orphan features from ``polys.features``.
+    mark_field : str, default="orphanDetected"
+        Field name under ``_repair`` used when writing orphan annotations.
 
-    Returns summary stats and affected ids.
+    Returns
+    -------
+    dict[str, Any]
+        Summary with keys ``orphans_found``, ``marked``, ``deleted``,
+        ``orphan_ids``, and ``reasons``.
+
+    Notes
+    -----
+    When ``mark=True`` and ``delete=True``, features are marked before deletion.
+
+    This function mutates ``polys`` in place.
     """
     orphans = find_orphan_children(polys)
     if not orphans:
@@ -741,8 +1036,30 @@ def find_duplicate_children_by_geometry(
     rounding_precision: int = 8,   # to tolerate tiny float noise
 ) -> Dict[str, List[List[Any]]]:
     """
-    Returns duplicates grouped by area label.
-    Output: { "Area 1": [[child_id_a, child_id_b], [child_id_c, child_id_d, child_id_e], ...], ... }
+    Find exact-geometry duplicate children grouped by area label.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to analyze.
+    rounding_precision : int, default=8
+        Rounding precision used when generating WKB hash keys (when supported)
+        to tolerate tiny float noise.
+
+    Returns
+    -------
+    dict[str, list[list[Any]]]
+        Mapping from area label to duplicate groups of child feature IDs.
+        Each inner group contains IDs with matching normalized geometry.
+
+    Raises
+    ------
+    ImportError
+        If Shapely is unavailable.
+
+    Notes
+    -----
+    Duplicate matching uses normalized geometry and WKB-based keys.
     """
     if _SHAPE is None:
         raise ImportError("find_duplicate_children_by_geometry requires shapely (_SHAPE is None)")
@@ -799,6 +1116,29 @@ def validate_duplicate_children(
     rounding_precision: int = 8,
     as_error: bool = True,
 ) -> "ValidationReport":
+    """
+    Validate whether duplicate child geometries exist.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to validate.
+    rounding_precision : int, default=8
+        Rounding precision passed to duplicate detection hashing.
+    as_error : bool, default=True
+        If True, duplicate findings are recorded as errors; otherwise warnings.
+
+    Returns
+    -------
+    ValidationReport
+        Validation report containing duplicate summary in
+        ``stats['duplicate_groups_by_area']``.
+
+    Notes
+    -----
+    If Shapely is unavailable, duplicate validation is skipped and a warning is
+    recorded.
+    """
     rep = ValidationReport(ok=True)
     try:
         dups = find_duplicate_children_by_geometry(polys, rounding_precision=rounding_precision)
@@ -834,15 +1174,36 @@ def dedupe_children_exact_geometry(
     """
     Remove exact-geometry duplicate child polygons within each area.
 
-    Requires shapely (_SHAPE must not be None).
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to mutate in place.
+    rounding_precision : int, default=8
+        Rounding precision used for WKB key generation when supported.
+    keep : {"first", "lowest_id"}, default="first"
+        Keeper selection policy for each duplicate group.
 
-    Returns stats:
-      {
-        "removed_total": int,
-        "kept_total": int,
-        "removed_by_area": {area_label: int, ...},
-        "groups_by_area": {area_label: int, ...},
-      }
+        - first: keep first encountered feature
+        - lowest_id: keep feature with smallest string-sorted id
+    add_repair_notes : bool, default=True
+        If True, annotate keeper features with removed duplicate ids under
+        properties _repair duplicateChildrenRemoved.
+
+    Returns
+    -------
+    dict[str, Any]
+        Summary with keys removed_total, kept_total, removed_by_area, and
+        groups_by_area.
+
+    Raises
+    ------
+    ImportError
+        If Shapely is unavailable.
+
+    Notes
+    -----
+    Duplicate identity is determined by normalized geometry and stable WKB key.
+    This function mutates polys.features by removing duplicate children.
     """
     if _SHAPE is None:
         raise ImportError("dedupe_children_exact_geometry requires shapely (_SHAPE is None)")
@@ -936,14 +1297,28 @@ def find_cross_area_duplicate_children_exact_geometry(
     rounding_precision: int = 8,
 ) -> List[Dict[str, Any]]:
     """
-    Find exact-geometry duplicate child polygons that occur across multiple areas.
+    Find exact-geometry duplicate children that appear in multiple areas.
 
-    Returns a list of groups like:
-      {
-        "geom_group_size": 2,
-        "areas": {"Area 3": [id1], "Area 4": [id2]},
-        "all_ids": [id1, id2]
-      }
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to analyze.
+    rounding_precision : int, default=8
+        Rounding precision used for geometry hashing.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        List of cross-area duplicate groups. Each group contains:
+
+        - geom_group_size: total ids in group
+        - areas: mapping area label to ids in that area
+        - all_ids: flattened id list across all areas
+
+    Raises
+    ------
+    ImportError
+        If Shapely is unavailable.
     """
     if _SHAPE is None:
         raise ImportError("Requires shapely (_SHAPE is None)")
@@ -1005,10 +1380,36 @@ def repair_cross_area_duplicates_by_best_root_overlap(
     add_repair_notes: bool = True,
 ) -> Dict[str, Any]:
     """
-    For exact-geometry duplicate child polygons that appear across areas,
-    reassign each child to the root polygon it overlaps most.
+    Reassign cross-area duplicate children to the best-overlap root polygon.
 
-    Returns stats: number of reassigned features.
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to mutate.
+    rounding_precision : int, default=8
+        Precision used in cross-area duplicate grouping.
+    min_advantage : float, default=0.0
+        Minimum area-overlap advantage required for winner root over second
+        candidate root. Helps avoid boundary ambiguity reassignment.
+    add_repair_notes : bool, default=True
+        If True, write cross-area reassignment audit details under
+        properties _repair crossAreaDupFix.
+
+    Returns
+    -------
+    dict[str, Any]
+        Summary with reassigned feature count, touched group count, and seen
+        group count.
+
+    Raises
+    ------
+    ImportError
+        If Shapely is unavailable.
+
+    Notes
+    -----
+    Root winner is selected by maximum intersection area with representative
+    group geometry.
     """
     if _SHAPE is None:
         raise ImportError("Requires shapely (_SHAPE is None)")
@@ -1096,10 +1497,25 @@ def flatten_parent_chains_to_roots(
     add_repair_notes: bool = True,
 ) -> dict:
     """
-    If a child points to another child, walk parentId pointers until we hit a root (parentId==None, not metadata),
-    then rewrite the child's parentId to that root.
+    Flatten child-to-child parent chains so children point directly to roots.
 
-    This does NOT use shapely and is safe to run first.
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to mutate.
+    add_repair_notes : bool, default=True
+        If True, store old/new parent linkage under properties _repair
+        parentChainFlattened.
+
+    Returns
+    -------
+    dict
+        Summary dictionary with fixed and unresolved counts.
+
+    Notes
+    -----
+    This routine is purely graph-based and does not use Shapely. It is safe
+    as a first repair pass before geometry-based reassignment.
     """
     idx = polys.index()
     roots = list(polys.area_roots())
@@ -1151,6 +1567,31 @@ def assign_parent_to_containing_root(
     *,
     add_repair_notes: bool = True,
 ) -> dict:
+    """
+    Assign each child to the root polygon that contains its representative point.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to mutate.
+    add_repair_notes : bool, default=True
+        If True, record parent reassignment audit notes under properties
+        _repair parentAssignedByContainment.
+
+    Returns
+    -------
+    dict
+        Summary with reassigned and skipped counts.
+
+    Raises
+    ------
+    ImportError
+        If Shapely is unavailable.
+
+    Notes
+    -----
+    Children not contained by any root are skipped.
+    """
     if _SHAPE is None:
         raise ImportError("assign_parent_to_containing_root requires shapely (_SHAPE is None)")
 
@@ -1199,6 +1640,33 @@ def dedupe_children_exact_geometry_for_area(
     keep: str = "first",
     add_repair_notes: bool = True,
 ) -> dict:
+    """
+    Remove exact-geometry duplicate children for one area only.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to mutate.
+    area_label : str
+        Root area label to target.
+    rounding_precision : int, default=8
+        Precision used in geometry hashing.
+    keep : {"first", "lowest_id"}, default="first"
+        Keeper policy per duplicate group.
+    add_repair_notes : bool, default=True
+        If True, annotate keeper features with removed ids.
+
+    Returns
+    -------
+    dict
+        Summary with removed_total, duplicate_groups, and area. If area is not
+        found, returns removed_total=0 with reason.
+
+    Raises
+    ------
+    ImportError
+        If Shapely is unavailable.
+    """
     if _SHAPE is None:
         raise ImportError("Requires shapely (_SHAPE is None)")
 
@@ -1272,6 +1740,27 @@ import matplotlib.pyplot as plt
 from shapely.geometry import Polygon, MultiPolygon
 
 def plot_area_with_children(polys, area_label):
+    """
+    Plot one area root polygon with its child polygons.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection containing roots and children.
+    area_label : str
+        Target area label from root areaId or name.
+
+    Raises
+    ------
+    ImportError
+        If Shapely is unavailable.
+    ValueError
+        If target area root is not found.
+
+    Notes
+    -----
+    Uses matplotlib for display and has plotting side effects.
+    """
     if _SHAPE is None:
         raise ImportError("Requires shapely")
 
@@ -1316,6 +1805,27 @@ def plot_area_with_children(polys, area_label):
 
 
 def plot_area_with_duplicates(polys, area_label, rounding_precision=8):
+    """
+    Plot one area and color duplicate geometry groups for visual QA.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection containing roots and children.
+    area_label : str
+        Target area label from root areaId or name.
+    rounding_precision : int, default=8
+        Kept for duplicate-key precision intent.
+
+    Raises
+    ------
+    ImportError
+        If Shapely is unavailable.
+
+    Notes
+    -----
+    Children in duplicate groups are rendered in red; others in blue.
+    """
     if _SHAPE is None:
         raise ImportError("Requires shapely")
 
@@ -1383,6 +1893,33 @@ def keep_area_children_by_id_slice(
       - optionally requires count to be a multiple of expected_per_area
 
     Returns stats with warnings.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to mutate.
+    area_label : str
+        Root area label to process.
+    expected_per_area : int, default=80
+        Target number of children to keep.
+    keep : {"last", "first"}, default="last"
+        Select last or first id-sorted slice of size expected_per_area.
+    strict_multiple : bool, default=True
+        If True, requires child count to be an exact multiple of
+        expected_per_area before slicing.
+    add_repair_notes : bool, default=True
+        If True, add keptByIdSlice audit notes to kept children.
+
+    Returns
+    -------
+    dict[str, Any]
+        Summary including kept/removed counts and warning messages.
+
+    Raises
+    ------
+    ValueError
+        If area is missing, child count is too low, count violates strict
+        multiple requirement, or keep mode is invalid.
     """
     warnings: List[str] = []
 
@@ -1475,6 +2012,22 @@ def keep_one_overlap_batch(
     Given split_result from split_area_children_into_batches_by_overlap_graph(),
     keep one batch and remove the other from polys.features.
     Batch selection uses feature id ordering (median id), matching the "last-added" assumption.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to mutate.
+    area_label : str
+        Root area label to process.
+    split_result : dict[str, Any]
+        Output from split_area_children_into_batches_by_overlap_graph.
+    keep : {"last", "first"}, default="last"
+        Select later-id batch or earlier-id batch for retention.
+
+    Returns
+    -------
+    dict[str, Any]
+        Summary of kept/removed counts and selected batch label.
     """
     b0 = split_result.get("batch0_ids", [])
     b1 = split_result.get("batch1_ids", [])
@@ -1529,22 +2082,42 @@ def split_area_children_into_batches_by_overlap_graph(
           nodes = child polygons
           edge(u,v) if u and v overlap meaningfully
 
-    We build the overlap graph with shapely + STRtree and attempt bipartite 2-coloring.
-    If successful, the two color classes are returned as two batches.
+    We build the overlap graph with shapely and STRtree, then attempt
+    bipartite 2-coloring. If successful, the two color classes are returned as
+    two candidate batches.
 
-    Returns:
-      {
-        "ok": bool,
-        "area": area_label,
-        "root_id": ...,
-        "n_children": int,
-        "n_edges": int,
-        "bipartite": bool,
-        "batch0_ids": [...],
-        "batch1_ids": [...],
-        "conflicts": int,
-        "warnings": [...],
-      }
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection containing target area children.
+    area_label : str
+        Root area label to split.
+    overlap_area_eps : float, default=1e-14
+        Minimum absolute overlap area threshold.
+    overlap_min_frac : float, default=1e-4
+        Minimum overlap fraction relative to smaller polygon area.
+    expected_per_area : int or None, default=80
+        Optional expected per-batch size used for warning heuristics.
+    rounding_precision : int, default=8
+        Reserved precision parameter for geometry normalization workflows.
+
+    Returns
+    -------
+    dict[str, Any]
+        Split report containing graph metrics, bipartite status, batch ids,
+        warnings, and threshold metadata.
+
+    Raises
+    ------
+    ImportError
+        If Shapely is unavailable.
+    ValueError
+        If target area root is not found.
+
+    Notes
+    -----
+    If no overlap edges are found, function returns successfully with warning,
+    which may indicate no redraw overlap or overly strict thresholds.
     """
     warnings: List[str] = []
 
@@ -1740,6 +2313,27 @@ def split_area_children_into_batches_by_overlap_graph(
 
 
 def assert_no_internal_overlaps(polys, area_label, overlap_area_eps=1e-14):
+    """
+    Assert that children within one area do not overlap beyond threshold.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to inspect.
+    area_label : str
+        Root area label to validate.
+    overlap_area_eps : float, default=1e-14
+        Maximum tolerated overlap area between any child pair.
+
+    Raises
+    ------
+    ValueError
+        If overlap area exceeds threshold for any child pair.
+
+    Notes
+    -----
+    If Shapely is unavailable, function returns without checks.
+    """
     if _SHAPE is None:
         return
 
@@ -1779,9 +2373,28 @@ def rename_children_row_offset_ORIG(
 
     Parameters
     ----------
-    area_label : restrict to a specific area
-    row_offset : integer offset to add to row
-    strict     : if True, raise on malformed names
+    polys : PolygonCollection
+        Collection to mutate.
+    area_label : str or None, optional
+        Restrict rename to specific area root.
+    row_offset : int, default=0
+        Offset added to row component in row@col names.
+    name_field : str, default="name"
+        Property field to read/write.
+    separator : str, default="@"
+        Token separator between row and column.
+    strict : bool, default=True
+        If True, raise on malformed names; otherwise skip invalid records.
+
+    Returns
+    -------
+    dict[str, int]
+        Summary with renamed count.
+
+    Notes
+    -----
+    This function mutates feature name fields in place and writes audit notes
+    under properties _repair renamedRowOffset.
     """
 
     # Optional area filter
@@ -1860,6 +2473,35 @@ def rename_children_row_offset(
         1@5 -> 2@5                  (row_offset=+1)
         1@5 -> A4_2@5               (row_offset=+1, prefix="A4")
         A4_1@5 -> Block1_2@5        (prefix override)
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to mutate.
+    area_label : str or None, optional
+        Restrict rename to specific area root.
+    row_offset : int, default=0
+        Offset added to row component.
+    name_field : str, default="name"
+        Property field to read/write.
+    separator : str, default="@"
+        Separator between row and column.
+    prefix : str or None, optional
+        Optional prefix override to prepend to renamed values.
+    prefix_sep : str, default="_"
+        Separator between prefix and core row@col tag.
+    strict : bool, default=True
+        If True, raise on malformed names; otherwise skip invalid records.
+
+    Returns
+    -------
+    dict[str, int]
+        Summary with renamed count.
+
+    Notes
+    -----
+    Existing prefix-like text is stripped when it matches prefix_sep plus a
+    valid row@col payload.
     """
 
     root_id = None
@@ -1946,6 +2588,24 @@ def print_children_names_by_area(
     """
     Print child names grouped by area.
     If area_label is provided, only that area is shown.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to inspect.
+    area_label : str or None, optional
+        Optional filter to print only one area.
+    name_field : str, default="name"
+        Child property field to print.
+
+    Raises
+    ------
+    ValueError
+        If area_label is provided and no matching area root exists.
+
+    Notes
+    -----
+    This function prints directly to stdout.
     """
 
     roots = list(polys.area_roots())
@@ -1976,7 +2636,19 @@ def print_children_names_by_area(
 
 def get_children_nodes_by_area(polys, name_field="name"):
     """
-    Return dict of area label -> list of child name_field values.
+    Return mapping area label to child name-field values.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to inspect.
+    name_field : str, default="name"
+        Child property field to collect.
+
+    Returns
+    -------
+    dict
+        Mapping from area label to list of child values from name_field.
     """
     result = {}
     for r in polys.area_roots():
@@ -1990,6 +2662,22 @@ def get_children_nodes_by_area(polys, name_field="name"):
     return result
 
 def check_duplicate_names(polys, name_field="name"):
+    """
+    Find duplicate child name values within each area.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Collection to inspect.
+    name_field : str, default="name"
+        Child property field used for duplicate checks.
+
+    Returns
+    -------
+    dict
+        Mapping from area label to list of duplicate values. Areas without
+        duplicates are omitted.
+    """
     report = {}
     for r in polys.area_roots():
         label = r.areaId or r.name or str(r.id)
@@ -2012,12 +2700,34 @@ from collections import Counter
 
 @dataclass
 class ValidationReport:
+    """
+    Validation outcome container for hierarchy checks.
+
+    Attributes
+    ----------
+    ok : bool
+        True when no validation errors were recorded.
+    errors : list[str]
+        Error messages that indicate invalid structure.
+    warnings : list[str]
+        Non-fatal validation warnings.
+    stats : dict[str, Any]
+        Diagnostic counters and context captured during validation.
+    """
     ok: bool
     errors: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     stats: Dict[str, Any] = field(default_factory=dict)
 
     def raise_if_errors(self) -> None:
+        """
+        Raise a combined ``ValueError`` when errors are present.
+
+        Raises
+        ------
+        ValueError
+            If ``self.errors`` is non-empty.
+        """
         if self.errors:
             msg = "GeoJSON validation failed:\n" + "\n".join(f"- {e}" for e in self.errors)
             raise ValueError(msg)
@@ -2029,14 +2739,37 @@ def validate_area_hierarchy(
     require_shapely_containment: bool = False,  # if True, containment checks become ERRORs
 ) -> ValidationReport:
     """
-    Validate parent/area structure.
+    Validate area-root and child hierarchy consistency.
 
-    Checks:
-      - roots count / uniqueness
-      - expected root names from metadata.areas (if present)
-      - children parentId points to a root (not metadata, not child, not self)
-      - children areaId matches root's areaId
-      - optional geometric containment using shapely (if available as _SHAPE)
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Polygon collection to validate.
+    require_expected_roots : bool, default=False
+        If True, mismatch against ``metadata.areas`` expected roots is treated
+        as an error; otherwise as warning.
+    require_shapely_containment : bool, default=False
+        If True, containment mismatches become errors. If False, containment
+        mismatches are recorded as warnings.
+
+    Returns
+    -------
+    ValidationReport
+        Structured validation result containing ``ok`` flag, error/warning
+        messages, and summary stats.
+
+    Notes
+    -----
+    Validation checks include:
+
+    - root presence and uniqueness
+    - expected root alignment from ``metadata.areas`` (if present)
+    - child ``parentId`` validity (must exist and refer to a root)
+    - child/root ``areaId`` consistency checks
+    - optional geometric containment checks using Shapely representative points
+
+    Containment checks are skipped when Shapely is unavailable unless
+    ``require_shapely_containment=True``.
     """
     rep = ValidationReport(ok=True)
 
@@ -2184,10 +2917,38 @@ def load_geojson_polygons(
     strict: bool = False,
 ) -> PolygonCollection:
     """
-    Load a GeoJSON FeatureCollection into a PolygonCollection.
+    Load a GeoJSON FeatureCollection into a ``PolygonCollection``.
 
-    ID selection:
-      - properties['polygonId'] if present, else feature index
+    Parameters
+    ----------
+    path : str or Path
+        Input GeoJSON file path.
+    annotations_key : str, default="annotations"
+        Default feature property key used for annotations access.
+    pixel_points_key : str, default="pixelPoints"
+        Default feature property key used for pixel-point access.
+    allow_multipolygon : bool, default=True
+        If True, accepts ``MultiPolygon`` geometries in addition to
+        ``Polygon``.
+    strict : bool, default=False
+        If True, raises on malformed/unsupported features. If False, skips
+        invalid features.
+
+    Returns
+    -------
+    PolygonCollection
+        Parsed collection preserving CRS and top-level metadata.
+
+    Raises
+    ------
+    ValueError
+        If top-level GeoJSON structure is invalid, or when ``strict=True`` and
+        malformed/unsupported features are encountered.
+
+    Notes
+    -----
+    Feature ID selection uses ``properties['polygonId']`` when present,
+    otherwise falls back to feature index.
     """
     path = _as_path(path)
     with path.open("r", encoding="utf-8") as f:
@@ -2257,6 +3018,19 @@ def load_geojson_polygons(
 
 # OpenCV is optional: import only if user calls cutout functions.
 def _require_cv2_and_numpy():
+    """
+    Import and return NumPy and OpenCV runtime dependencies.
+
+    Returns
+    -------
+    tuple[module, module]
+        Imported ``numpy`` and ``cv2`` modules.
+
+    Raises
+    ------
+    ImportError
+        If NumPy or OpenCV cannot be imported.
+    """
     try:
         import numpy as np  # type: ignore
     except Exception as e:
@@ -2273,14 +3047,23 @@ def _require_cv2_and_numpy():
 @dataclass
 class CutoutResult:
     """
-    Output of cutout_feature_pixels().
+    Output of ``cutout_feature_pixels``.
 
-    bbox: (minx, miny, maxx, maxy) in the coordinate space of the input image array.
-          Note: bbox is inclusive.
-    cutout: cropped masked image (same dtype as input)
-    mask:   cropped mask uint8 (0 or 255)
-    ring_xy_in_crop: ring coordinates after shifting into crop coords
-    meta: optional convenience dict with feature fields
+    Attributes
+    ----------
+    feature_id : Any
+        Identifier of the source feature used for cutout.
+    bbox : tuple[int, int, int, int]
+        Inclusive bounding box ``(minx, miny, maxx, maxy)`` in input image
+        coordinates.
+    cutout : Any
+        Cropped masked image array (same dtype as source image).
+    mask : Any
+        Cropped binary mask array (uint8, values 0 or 255).
+    ring_xy_in_crop : list[tuple[int, int]]
+        Polygon ring shifted into crop-local coordinates.
+    meta : dict[str, Any]
+        Convenience metadata dictionary copied from feature fields.
     """
     feature_id: Any
     bbox: Tuple[int, int, int, int]
@@ -2291,6 +3074,24 @@ class CutoutResult:
 
 
 def _clip_bbox_to_image(bbox: Tuple[int, int, int, int], H: int, W: int) -> Optional[Tuple[int, int, int, int]]:
+    """
+    Clip an inclusive bounding box to image bounds.
+
+    Parameters
+    ----------
+    bbox : tuple[int, int, int, int]
+        Inclusive ``(minx, miny, maxx, maxy)`` bounding box.
+    H : int
+        Image height in pixels.
+    W : int
+        Image width in pixels.
+
+    Returns
+    -------
+    tuple[int, int, int, int] or None
+        Clipped inclusive bounding box, or ``None`` when the clipped region is
+        empty/outside image bounds.
+    """
     minx, miny, maxx, maxy = bbox
     minx = max(minx, 0)
     miny = max(miny, 0)
@@ -2309,15 +3110,43 @@ def cutout_polygon_opencv(
     return_pixels: bool = False,
 ):
     """
-    Fast cutout:
-      - compute bbox
-      - crop
-      - shift ring into crop coords
-      - fill mask with cv2.fillPoly
-      - apply mask
+    Cut out polygon pixels from an image using OpenCV rasterization.
 
-    return_pixels:
-      - if True, also returns (ys, xs) indices inside the polygon in crop coords
+    Parameters
+    ----------
+    image : np.ndarray
+        Source image array with shape ``(H, W)`` or ``(H, W, C)``.
+    ring_xy : list[tuple[int, int]]
+        Polygon ring coordinates in input image pixel space.
+    bbox_pad : int, default=0
+        Padding (in pixels) applied to polygon bounding box before clipping.
+    return_pixels : bool, default=False
+        If True, include arrays of ``(ys, xs)`` pixel indices where mask > 0
+        in crop-local coordinates.
+
+    Returns
+    -------
+    tuple or None
+        Returns ``None`` when ring is missing/invalid or bbox is fully out of
+        bounds.
+
+        When ``return_pixels=False``:
+        ``(cut, mask, bbox, ring_crop)``
+
+        When ``return_pixels=True``:
+        ``(cut, mask, bbox, ring_crop, (ys_in, xs_in))``
+
+        Where:
+
+        - ``cut`` is cropped masked image
+        - ``mask`` is uint8 polygon mask (0/255)
+        - ``bbox`` is inclusive ``(minx, miny, maxx, maxy)`` in source coords
+        - ``ring_crop`` is ring shifted to crop-local coordinates
+
+    Raises
+    ------
+    ImportError
+        If NumPy or OpenCV are unavailable.
     """
     np, cv2 = _require_cv2_and_numpy()
 
@@ -2365,18 +3194,44 @@ def cutout_feature_pixels(
     return_pixels: bool = False,
 ) -> Optional[CutoutResult]:
     """
-    One-stop convenience function:
-      - get polygon ring from feature.pixelPoints
-      - apply scaling ONLY if scale is not None
-      - apply offset if needed (e.g., window shift)
-      - cut out polygon pixels from raster image using OpenCV
+    Convenience wrapper to cut out one feature polygon from a raster image.
 
-    Typical usage for your dataset:
-      - pixelPoints are 1/4 resolution -> use scale=4.0
-      - otherwise use scale=None (default)
+    Parameters
+    ----------
+    feature : PolygonFeature
+        Feature providing pixel ring coordinates.
+    image : np.ndarray
+        Source image array with shape ``(H, W)`` or ``(H, W, C)``.
+    scale : float or None, optional
+        Optional scaling applied to ``feature.pixelPoints``. Scaling is only
+        applied when ``scale is not None``.
+    offset_xy : tuple[int, int], default=(0, 0)
+        Offset applied to ring coordinates before cutout. Useful when mapping
+        global coordinates into a window-local image.
+    round_mode : {"round", "floor", "ceil"}, default="round"
+        Integer rounding mode used when generating ring coordinates.
+    bbox_pad : int, default=0
+        Padding (in pixels) applied to polygon bounding box.
+    return_pixels : bool, default=False
+        If True, include pixel index arrays in returned ``meta`` under
+        ``pixels_yx_in_crop``.
 
-    If working on a window extracted from a larger image:
-      - set offset_xy = (-window_x0, -window_y0) so ring matches window coords
+    Returns
+    -------
+    CutoutResult or None
+        Structured cutout result, or ``None`` when ring cannot be built or
+        cutout region is invalid/out of bounds.
+
+    Notes
+    -----
+    Typical usage for downsampled masks:
+
+    - if ``pixelPoints`` are at quarter resolution, use ``scale=4.0``
+    - otherwise keep ``scale=None``
+
+    If working on a window extracted from a larger image, set
+    ``offset_xy = (-window_x0, -window_y0)`` so ring and image coordinates
+    align.
     """
     ring = feature.pixel_ring(
         scale=scale,
@@ -2440,10 +3295,33 @@ def iter_cutouts(
     round_mode: str = "round",
 ) -> Iterator[CutoutResult]:
     """
-    Bulk iterator: yield CutoutResult for each feature with pixelPoints.
+    Iterate cutouts for features in a collection.
 
-    - By default, uses collection.children_only(keep_metadata=False)
-      so you don't accidentally attempt to cut area roots / metadata.
+    Parameters
+    ----------
+    collection : PolygonCollection
+        Source feature collection.
+    image : np.ndarray
+        Source image array used for cutouts.
+    scale : float or None, optional
+        Optional scaling factor passed to ``cutout_feature_pixels``.
+    bbox_pad : int, default=0
+        Bounding-box padding passed to cutout operation.
+    keep_metadata : bool, default=False
+        Passed to ``collection.children_only``. By default, metadata and area
+        roots are excluded from cutout iteration.
+    round_mode : {"round", "floor", "ceil"}, default="round"
+        Coordinate rounding mode passed to feature cutout.
+
+    Yields
+    ------
+    CutoutResult
+        One result per successfully cut feature.
+
+    Notes
+    -----
+    Features without parseable ``pixelPoints`` and features producing invalid
+    cutouts are skipped silently.
     """
     feats = collection.children_only(keep_metadata=keep_metadata)
 

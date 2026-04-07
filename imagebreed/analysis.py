@@ -39,7 +39,8 @@ logger = logging.getLogger(__name__)
 
 BAND_NAMES = ("red", "green", "blue", "nir")
 
-
+#TODO: add option to compute indices over masked vegetation pixels only, not the full cutout (soil/shadow pixels can skew the values)
+#TODO: use extract_area_cutout_and_mask from module to avoiud helper function duplication with the mask transfer pipeline
 def _extract_area_cutout_and_mask(
     url_band: str,
     area_feature: dict[str, Any],

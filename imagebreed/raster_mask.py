@@ -71,7 +71,7 @@ def reproject_to_reference(
         if k not in reference_meta or reference_meta[k] is None:
             raise ValueError(f"reference_meta missing required key: {k}")
 
-    src_nodata = source_meta.get("nodata")
+    src_nodata = source_meta.get("nodata")#dst_nodata=np.nan if np.issubdtype(band_area.dtype, np.floating) else src_nodata,
     src = source_array
     if np.ma.isMaskedArray(src):
         if src_nodata is None:
@@ -245,3 +245,9 @@ def save_mask_geotiff(
         dst.write(mask, 1)
 
     return out_path
+
+__all__ = [
+    "png_blue_to_mask",
+    "reproject_to_reference",
+    "save_mask_geotiff",
+]

@@ -26,6 +26,7 @@ import rasterio
 import requests
 from PIL import Image
 from rasterio.mask import mask
+from rasterio.transform import Affine, rowcol
 from shapely.geometry import mapping, shape
 
 from .api import build_ortho_url, cutout_areas, fetch_ortho_catalog
@@ -459,6 +460,61 @@ def plot_overlay_at_scale(
     fmt="png",
     area_label=None,
 ):
+    """Plot child polygons over a remotely fetched image at ``target_scale``.
+
+    Parameters
+    ----------
+    polys : PolygonCollection-like
+        Polygon collection containing metadata and child polygon ``pixelPoints``.
+    server : str
+        API host name or IP address.
+    port : int
+        API port.
+    locator : str
+        Orthomosaic locator identifier.
+    date : str
+        Acquisition date used by the file API.
+    band : str
+        Requested band name.
+    target_scale : float
+        Desired image scale used both for URL construction and coordinate
+        scaling of polygon points.
+    fmt : str, default="png"
+        Remote file format.
+    area_label : str or None, default=None
+        If provided, plot only children belonging to this area root.
+
+    Raises
+    ------
+    ValueError
+        If metadata scale is missing.
+    requests.HTTPError
+        If the remote image request fails.
+
+    Notes
+    -----
+    Coordinates are scaled before drawing:
+
+    - ``factor = target_scale / source_scale``
+    - ``x_draw = x * factor``
+    - ``y_draw = y * factor``
+
+    This function does not apply cutout-origin translation.
+
+    Examples
+    --------
+    >>> plot_overlay_at_scale(  # doctest: +SKIP
+    ...     polys,
+    ...     server="example.org",
+    ...     port=9001,
+    ...     locator="9AB9AC",
+    ...     date="20250822",
+    ...     band="unknown",
+    ...     target_scale=0.25,
+    ...     fmt="png",
+    ...     area_label="Area 1",
+    ... )
+    """
     mf = polys.metadata_feature()
     source_scale = mf.properties.get("scale")
     if not source_scale:
@@ -702,6 +758,61 @@ def plot_geojson_pixelpoints_on_image(
     node_label_color: str = "yellow",
     node_label_field_name: str | None = None,
 ):
+    """Plot polygon ``pixelPoints`` on a full image loaded from URL.
+
+    Parameters
+    ----------
+    image_url : str
+        URL of the image used as plotting background.
+    geojson_path : str
+        Path to the GeoJSON containing polygon ``pixelPoints``.
+    area_label : str or None, default=None
+        Optional area root label filter.
+    show_children : bool, default=True
+        Whether to draw child polygons.
+    show_roots : bool, default=True
+        Whether to draw area root polygons.
+    linewidth : float, default=2.0
+        Matplotlib line width for polygon edges.
+    pixelpoint_scale : float or int, default=1
+        Multiplicative factor applied to polygon pixel coordinates before
+        plotting.
+    show_node_labels : bool, default=False
+        Whether to draw text labels from feature properties.
+    node_label_fontsize : float, default=8.0
+        Font size for node labels.
+    node_label_color : str, default="yellow"
+        Label color.
+    node_label_field_name : str or None, default=None
+        Feature property name used to render labels.
+
+    Raises
+    ------
+    requests.HTTPError
+        If loading the image from ``image_url`` fails.
+
+    Notes
+    -----
+    Coordinates are drawn after optional multiplicative scaling:
+
+    - ``x_draw = x * pixelpoint_scale``
+    - ``y_draw = y * pixelpoint_scale``
+
+    No cutout-origin translation is applied in this full-frame view.
+
+    Examples
+    --------
+    >>> plot_geojson_pixelpoints_on_image(  # doctest: +SKIP
+    ...     image_url=image_url,
+    ...     geojson_path="metadata/areas.annotated.geojson",
+    ...     show_roots=True,
+    ...     show_children=True,
+    ...     area_label=None,
+    ...     pixelpoint_scale=4.0,
+    ...     show_node_labels=True,
+    ...     node_label_field_name="plantId",
+    ... )
+    """
     img = load_image_from_url(image_url)
     polys = load_geojson_polygons(geojson_path)
 
@@ -777,17 +888,285 @@ def plot_geojson_pixelpoints_on_area_cutout_object(
     show_children: bool = True,
     show_roots: bool = True,
     linewidth: float = 2.0,
+    reproject_before_draw: bool = False,
+    source_scale: float | None = None,
+    cutout_scale: float | None = None,
 ):
-    img = cutout_obj["image"]
+    """Plot GeoJSON pixel-point polygons on an area cutout image.
+
+    Parameters
+    ----------
+    cutout_obj : PIL.Image.Image or dict
+        Cutout payload. Supported forms are:
+
+        - A direct ``PIL.Image.Image``.
+        - A dict with ``{"image": <PIL.Image.Image>, "bbox": ...}`` where
+          ``bbox`` is either ``(x0, y0, x1, y1)`` or
+          ``{"x0": ..., "y0": ..., "x1": ..., "y1": ...}``.
+        - A dict keyed by area label, e.g. ``{"Area 1": <image_or_payload>, ...}``.
+          In this case ``area_label`` is used to select one cutout entry.
+    geojson_path : str
+        Path to the GeoJSON with polygon ``pixelPoints``.
+    area_label : str or None, default=None
+        Area label to filter to (for example ``"Area 1"``). If ``None``, all
+        roots/children are considered when possible.
+    show_children : bool, default=True
+        Whether to plot child polygons.
+    show_roots : bool, default=True
+        Whether to plot area root polygons.
+    linewidth : float, default=2.0
+        Matplotlib line width for polygon edges.
+    reproject_before_draw : bool, default=False
+        If ``True``, convert polygon points from pixel space to projected
+        coordinates via metadata ``geoTransform`` and map them to cutout pixel
+        coordinates using the cutout affine transform.
+    source_scale : float or None, default=None
+        Optional override for metadata ``scale`` used by reprojection mode.
+    cutout_scale : float or None, default=None
+        Scale of the cutout image relative to the original raster, used only
+        when deriving a cutout transform from ``bbox`` and metadata
+        ``geoTransform``. If ``None``, ``source_scale`` is used.
+
+    Raises
+    ------
+    ValueError
+        If an image cannot be resolved from ``cutout_obj``.
+    ValueError
+        If ``reproject_before_draw=True`` but required transform metadata is
+        unavailable.
+
+    Notes
+    -----
+    The function rebases global pixel coordinates into the cutout-local frame
+    using a cutout origin ``(x0, y0)``. The origin is determined in this order:
+
+    1. Explicit ``bbox`` in ``cutout_obj``.
+    2. Heuristic inference from ``area_label`` root pixel bounds and cutout size.
+
+    Coordinates are drawn as:
+
+    - ``x_draw = x - x0``
+    - ``y_draw = y - y0``
+
+    Unlike :func:`plot_overlay_at_scale` and
+    :func:`plot_geojson_pixelpoints_on_image`, this function translates to a
+    cutout-local origin and does not apply a multiplicative scaling factor.
+
+        When ``reproject_before_draw=True``, the draw path becomes:
+
+        - working-image pixel points -> projected coordinates using ``geoTransform``
+        - projected coordinates -> cutout pixel coordinates via cutout transform
+            (provided or derived from ``bbox``)
+
+    For exact overlays, provide ``bbox`` explicitly in the cutout payload.
+
+    Examples
+    --------
+    >>> # Typical usage with an area-keyed cutout dict from crop helpers.
+    >>> plot_geojson_pixelpoints_on_area_cutout_object(  # doctest: +SKIP
+    ...     cutout_obj=area_cutouts,
+    ...     geojson_path=geojson_path,
+    ...     area_label="Area 1",
+    ...     show_roots=True,
+    ...     show_children=True,
+    ... )
+    """
+    # example to get a cutout object:
+    # from imagebreed.api import build_ortho_url
+    #
+    # url = build_ortho_url(server, port, locator, date, band, target_scale, fmt="png")
+    # area_cutouts = crop_area_cutouts(
+    #     polys,
+    #     image_url=url,
+    #     target_scale= 0.25,
+    #     pad_px = 20,
+    #     area_labels=("Area 1", "Area 2", "Area 3", "Area 4")
+    # )
+    # # you can check the cutout_obj for a specific area:
+    # cutout_obj = area_cutouts.get("Area 1")  # PIL Image for one area
+    # imagebreed.legacy_compat.plot_geojson_pixelpoints_on_area_cutout_object(
+    #     cutout_obj=area_cutouts,
+    #     geojson_path=geojson_path,
+    #     area_label="Area 1",
+    #     show_roots=True,
+    #     show_children=True,
+    # )
+
+    selected_obj = cutout_obj
+    if isinstance(cutout_obj, dict) and "image" not in cutout_obj:
+        if area_label is not None and area_label in cutout_obj:
+            selected_obj = cutout_obj[area_label]
+        elif len(cutout_obj) == 1:
+            area_label, selected_obj = next(iter(cutout_obj.items()))
+
+    bbox = None
+    cutout_transform = None
+    if isinstance(selected_obj, Image.Image):
+        img = selected_obj
+    elif isinstance(selected_obj, dict):
+        img = selected_obj.get("image")
+        bbox = selected_obj.get("bbox")
+        cutout_transform = selected_obj.get("transform")
+        if cutout_transform is None and isinstance(selected_obj.get("meta"), dict):
+            cutout_transform = selected_obj["meta"].get("transform")
+        if bbox is None and all(k in selected_obj for k in ("x0", "y0", "x1", "y1")):
+            bbox = (selected_obj["x0"], selected_obj["y0"], selected_obj["x1"], selected_obj["y1"])
+    else:
+        img = None
+
+    if img is None:
+        raise ValueError("cutout_obj must provide an image (PIL.Image or {'image': ...}).")
+
     polys = load_geojson_polygons(geojson_path)
+
+    # If bbox is not provided, derive it from the selected parent area feature.
+    if bbox is None and area_label is not None:
+        root = next((r for r in polys.area_roots() if (r.areaId or r.name) == area_label), None)
+        if root is not None and root.pixel_points:
+            xs = [p.x for p in root.pixel_points]
+            ys = [p.y for p in root.pixel_points]
+            raw_w = max(xs) - min(xs)
+            raw_h = max(ys) - min(ys)
+            pad_x = max((img.width - raw_w) / 2.0, 0.0)
+            pad_y = max((img.height - raw_h) / 2.0, 0.0)
+            bbox = {
+                "x0": float(min(xs) - pad_x),
+                "y0": float(min(ys) - pad_y),
+                "x1": float(max(xs) + pad_x),
+                "y1": float(max(ys) + pad_y),
+            }
+
+    projected_pixel_scale_factor = None
+    gt = None
+    cutout_transform_for_rowcol = None
+
+    if reproject_before_draw:
+        mf = polys.metadata_feature()
+        if mf is None:
+            raise ValueError("No metadata feature found; cannot reproject before draw.")
+        gt = (mf.properties or {}).get("geoTransform")
+        if not gt:
+            raise ValueError("metadata missing geoTransform; cannot reproject before draw.")
+
+        if source_scale is None:
+            source_scale = (mf.properties or {}).get("scale")
+        if not source_scale or float(source_scale) <= 0:
+            raise ValueError(f"Invalid source_scale={source_scale!r} for reprojection draw mode.")
+
+        if cutout_scale is None:
+            cutout_scale = source_scale
+        if not cutout_scale or float(cutout_scale) <= 0:
+            raise ValueError(f"Invalid cutout_scale={cutout_scale!r} for reprojection draw mode.")
+
+        if cutout_transform is None:
+            if isinstance(bbox, dict):
+                bx0 = float(bbox.get("x0", 0.0))
+                by0 = float(bbox.get("y0", 0.0))
+            elif isinstance(bbox, (tuple, list)) and len(bbox) == 4:
+                bx0 = float(bbox[0])
+                by0 = float(bbox[1])
+            else:
+                raise ValueError(
+                    "reproject_before_draw=True requires either cutout transform "
+                    "(cutout_obj['transform'] or cutout_obj['meta']['transform']) "
+                    "or a valid cutout bbox to derive one."
+                )
+
+            px, pw, rx, py, ry, ph = gt
+            s = float(cutout_scale)
+            origin_x = px + bx0 * (pw / s) + by0 * (rx / s)
+            origin_y = py + bx0 * (ry / s) + by0 * (ph / s)
+            cutout_transform = Affine.from_gdal(
+                origin_x,
+                pw / s,
+                rx / s,
+                origin_y,
+                ry / s,
+                ph / s,
+            )
+
+        projected_pixel_scale_factor = 1.0 / float(source_scale)
+
+        if isinstance(cutout_transform, Affine):
+            cutout_transform_for_rowcol = cutout_transform
+        elif isinstance(cutout_transform, (tuple, list)) and len(cutout_transform) == 6:
+            cutout_transform_for_rowcol = Affine.from_gdal(*cutout_transform)
+        elif hasattr(cutout_transform, "a") and hasattr(cutout_transform, "b"):
+            cutout_transform_for_rowcol = cutout_transform
+        else:
+            raise ValueError("Unsupported cutout transform type for reprojection draw mode.")
+
+    x0_off = 0.0
+    y0_off = 0.0
+
+    if isinstance(bbox, dict):
+        x0_off = float(bbox.get("x0", 0.0))
+        y0_off = float(bbox.get("y0", 0.0))
+    elif isinstance(bbox, (tuple, list)) and len(bbox) == 4:
+        x0_off = float(bbox[0])
+        y0_off = float(bbox[1])
+    elif area_label is not None:
+        # Final fallback when bbox cannot be resolved from cutout payload.
+        root = next((r for r in polys.area_roots() if (r.areaId or r.name) == area_label), None)
+        if root is not None and root.pixel_points:
+            xs = [p.x for p in root.pixel_points]
+            ys = [p.y for p in root.pixel_points]
+            raw_w = max(xs) - min(xs)
+            raw_h = max(ys) - min(ys)
+            pad_x = max((img.width - raw_w) / 2.0, 0.0)
+            pad_y = max((img.height - raw_h) / 2.0, 0.0)
+            x0_off = float(min(xs) - pad_x)
+            y0_off = float(min(ys) - pad_y)
 
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.imshow(img)
     ax.set_title(f"Overlay on cutout for {area_label or 'all areas'}")
     ax.set_axis_off()
 
-    # similar drawing logic as before, but now on the cutout image
-    # you may need to adjust pixelPoints based on the cutout's bbox if they are in global pixel coords
+    def draw_feature(feat):
+        pts = feat.pixel_points
+        if not pts:
+            return
+        if reproject_before_draw:
+            reproj_xy = []
+            for p in pts:
+                proj_x, proj_y = pixel_to_projected(
+                    p.x,
+                    p.y,
+                    geo_transform=gt,
+                    pixel_scale_factor=projected_pixel_scale_factor,
+                )
+                row, col = rowcol(cutout_transform_for_rowcol, proj_x, proj_y, op=float)
+                reproj_xy.append((col, row))
+            x_first, y_first = reproj_xy[0]
+            xs = [x for x, _ in reproj_xy] + [x_first]
+            ys = [y for _, y in reproj_xy] + [y_first]
+        else:
+            xs = [p.x - x0_off for p in pts] + [pts[0].x - x0_off]
+            ys = [p.y - y0_off for p in pts] + [pts[0].y - y0_off]
+        ax.plot(xs, ys, linewidth=linewidth)
+    
+
+    root_id_filter = None
+    if area_label is not None:
+        root = next((r for r in polys.area_roots() if (r.areaId or r.name) == area_label), None)
+        if root is not None:
+            root_id_filter = root.id
+            if show_roots:
+                draw_feature(root)
+
+    if show_roots and area_label is None:
+        for r in polys.area_roots():
+            draw_feature(r)
+
+    if show_children:
+        for c in polys.children_only(keep_metadata=False):
+            if root_id_filter is not None and c.parentId != root_id_filter:
+                continue
+            draw_feature(c)
+
+    plt.show()
+
 
 
 __all__ = [

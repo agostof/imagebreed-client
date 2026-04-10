@@ -32,7 +32,7 @@ def test_extract_area_cutout_and_mask_non_overlap_results_all_nan(monkeypatch) -
     )
     monkeypatch.setattr("imagebreed.mask_transfer.reproject_to_reference", reproject_to_reference)
 
-    _aligned, masked, aligned_meta = extract_area_cutout_and_mask(
+    _aligned, masked, aligned_meta, masked_meta = extract_area_cutout_and_mask(
         url_band="https://example.test/nir.tif",
         area_feature={"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}},
         area_mask_data=mask,

@@ -228,3 +228,11 @@ def collect_all_area_features(
             continue
         result[label] = ft
     return result
+
+__all__ = [
+    "find_area_feature",
+    "list_area_labels",
+    "find_child_feature",
+    "get_children_for_area",
+    "collect_all_area_features",
+]

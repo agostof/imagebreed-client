@@ -10,6 +10,17 @@ from .analysis import AreaResult, process_all_areas, analyze_field_from_server
 from .export import results_to_csv, results_to_dataframe, append_results_to_csv
 from .raster_mask import reproject_to_reference, png_blue_to_mask, save_mask_geotiff
 from .plot import plot_mask_overlay, plot_masked
+from .node_export import (
+    LayerSource,
+    list_available_name_fields,
+    validate_name_template,
+    build_layer_source_map,
+    write_export_manifest,
+    export_node_cutouts_from_server,
+    export_node_cutouts_from_local_raster,
+    export_node_cutouts_from_array,
+)
+
 from .mask_transfer import (
     MaskTransferConfig,
     MaskTransferResult,
@@ -64,6 +75,8 @@ from .legacy_compat import (
 )
 
 __all__ = [
+    "LayerSource", "list_available_name_fields", "validate_name_template", "build_layer_source_map", "write_export_manifest",
+    "export_node_cutouts_from_server", "export_node_cutouts_from_local_raster", "export_node_cutouts_from_array",
     "OrthoServerConfig",
     "download_to_cache", "inspect_geotiff", "cutout_band_by_polygon", "cutout_array_by_polygon", "save_cutout",
     "find_area_feature", "find_child_feature", "get_children_for_area", "list_area_labels", "collect_all_area_features",

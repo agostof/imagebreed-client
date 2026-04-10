@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
 import json
 import math
 
@@ -93,6 +93,48 @@ def _as_path(path: Union[str, Path]) -> Path:
         ``Path`` object for the provided input.
     """
     return path if isinstance(path, Path) else Path(path)
+
+
+def _feature_prop(feature: "PolygonFeature", key: str, default: Any = None) -> Any:
+    """
+    Return feature property value with convenience-field fallback.
+
+    Parameters
+    ----------
+    feature : PolygonFeature
+        Feature to inspect.
+    key : str
+        Property name.
+    default : Any, optional
+        Value returned when key is missing.
+    """
+    if key == "name":
+        return feature.name if feature.name is not None else feature.properties.get("name", default)
+    if key == "areaId":
+        return feature.areaId if feature.areaId is not None else feature.properties.get("areaId", default)
+    if key == "parentId":
+        return feature.parentId if feature.parentId is not None else feature.properties.get("parentId", default)
+    if key == "kind":
+        return feature.kind if feature.kind is not None else feature.properties.get("kind", default)
+    return feature.properties.get(key, default)
+
+
+class _PolygonCollectionLocator:
+    """Locator helper for label-style collection access (`collection.loc[...]`)."""
+
+    def __init__(self, collection: "PolygonCollection") -> None:
+        self._collection = collection
+
+    def __getitem__(self, key: str) -> "PolygonFeature":
+        return self._collection[key]
+
+    def filter(self, **criteria: Any) -> List["PolygonFeature"]:
+        """Return all features matching criteria."""
+        return self._collection.query_features(**criteria)
+
+    def get(self, **criteria: Any) -> "PolygonFeature":
+        """Return one feature matching criteria, raising when ambiguous/missing."""
+        return self._collection.get_feature(**criteria)
 
 
 class PixelPoint(NamedTuple):
@@ -524,6 +566,7 @@ class PolygonCollection:
 
     default_annotations_key: str = "annotations"
     default_pixel_points_key: str = "pixelPoints"
+    attached_orthos: Optional[Mapping[str, Any]] = None
 
     def __post_init__(self) -> None:
         """Apply default annotation/pixel-point keys to all contained features."""
@@ -539,12 +582,150 @@ class PolygonCollection:
         """Iterate over features preserving collection order."""
         return iter(self.features)
 
+    @property
+    def loc(self) -> _PolygonCollectionLocator:
+        """
+        Locator-style feature access.
+
+        Examples
+        --------
+        >>> feature = polys.loc["1@1"]
+        >>> wt_features = polys.loc.filter(genotype="WT", gridRow=0)
+        """
+        return _PolygonCollectionLocator(self)
+
+    def __getitem__(self, key: str) -> PolygonFeature:
+        """
+        Return a unique child feature by name-like key.
+
+        Notes
+        -----
+        This is equivalent to ``get_feature(name=key)`` and mirrors the
+        uniqueness behavior of ``find_child_feature``.
+        """
+        return self.get_feature(name=key)
+
     def by_id(self, feature_id: Union[str, int]) -> PolygonFeature:
         """Return feature by id, or raise KeyError when not found."""
         for f in self.features:
             if f.id == feature_id:
                 return f
         raise KeyError(f"Feature id not found: {feature_id!r}")
+
+    def query_features(
+        self,
+        *,
+        name: Optional[str] = None,
+        parent_name: Optional[str] = None,
+        area_label: Optional[str] = None,
+        parent_id: Any = None,
+        gridRow: Optional[int] = None,
+        gridCol: Optional[int] = None,
+        name_field: str = "name",
+        include_roots: bool = False,
+        include_metadata: bool = False,
+        **metadata_eq: Any,
+    ) -> List[PolygonFeature]:
+        """
+        Return all features matching query criteria.
+
+        Parameters support child-name and parent scoping semantics similar to
+        ``imagebreed.geometry.find_child_feature`` with additional metadata
+        filters (e.g. ``genotype='WT'``, ``gridRow=0``, ``gridCol=1``).
+        """
+        if area_label is not None and parent_name is None:
+            parent_name = area_label
+
+        roots = [f for f in self.features if f.is_area_root]
+        root_ids = {r.id for r in roots}
+
+        resolved_parent_id = parent_id
+        if parent_name is not None and resolved_parent_id is None:
+            root_matches = [r for r in roots if (r.areaId == parent_name) or (r.name == parent_name)]
+            if not root_matches:
+                raise ValueError(f"Area/parent {parent_name!r} not found.")
+            if len(root_matches) > 1:
+                raise ValueError(f"Multiple area roots matched {parent_name!r}.")
+            resolved_parent_id = root_matches[0].id
+
+        matches: List[PolygonFeature] = []
+        for feat in self.features:
+            if feat.is_metadata and not include_metadata:
+                continue
+            if (not include_roots) and (feat.parentId is None):
+                continue
+            if feat.parentId is not None and feat.parentId not in root_ids and not include_roots:
+                continue
+
+            if resolved_parent_id is not None and feat.parentId != resolved_parent_id:
+                continue
+            if name is not None and _feature_prop(feat, name_field) != name:
+                continue
+            if gridRow is not None and _feature_prop(feat, "gridRow") != gridRow:
+                continue
+            if gridCol is not None and _feature_prop(feat, "gridCol") != gridCol:
+                continue
+
+            is_match = True
+            for k, v in metadata_eq.items():
+                if _feature_prop(feat, k) != v:
+                    is_match = False
+                    break
+            if not is_match:
+                continue
+            matches.append(feat)
+        return matches
+
+    def get_feature(self, *, name: Optional[str] = None, **criteria: Any) -> PolygonFeature:
+        """
+        Return exactly one feature matching query criteria.
+
+        Raises
+        ------
+        ValueError
+            When zero or multiple matches are found.
+        """
+        matches = self.query_features(name=name, **criteria)
+        if not matches:
+            if name is not None:
+                raise ValueError(f"Child {name!r} not found with provided criteria.")
+            raise ValueError("No features matched the provided criteria.")
+        if len(matches) > 1:
+            if name is not None:
+                raise ValueError(f"Multiple children named {name!r} found. Provide parent_name/area_label to narrow.")
+            raise ValueError(f"Multiple features matched the provided criteria ({len(matches)} matches).")
+        return matches[0]
+
+    def attach_orthos(self, orthos: Mapping[str, Any]) -> None:
+        """Attach orthomosaic descriptors/data to this collection for visualization workflows."""
+        self.attached_orthos = orthos
+
+    def plot_grid(
+        self,
+        *,
+        text_label_field: str = "name",
+        color_by: Optional[str] = None,
+        hover_fields: Sequence[str] = ("name", "gridRow", "gridCol"),
+        backend: str = "matplotlib",
+        require_attached_orthos: bool = True,
+        show: bool = True,
+    ):
+        """
+        Visualize polygons in an area-grid layout.
+
+        This method is inspired by notebook visualization workflows and can
+        color polygons using any feature metadata field.
+        """
+        if require_attached_orthos and not self.attached_orthos:
+            raise RuntimeError("No orthos attached. Call attach_orthos(...) before plot_grid().")
+        return plot_polygon_collection_grid(
+            self,
+            text_label_field=text_label_field,
+            color_by=color_by,
+            hover_fields=hover_fields,
+            backend=backend,
+            show=show,
+        )
 
     def index(self) -> Dict[Union[str, int], PolygonFeature]:
         """Return dictionary index mapping feature id to feature object."""
@@ -685,6 +866,131 @@ class PolygonCollection:
         path = _as_path(path)
         with path.open("w", encoding="utf-8") as f:
             json.dump(self.to_geojson(), f, ensure_ascii=False, indent=indent)
+
+
+def plot_polygon_collection_grid(
+    polys: PolygonCollection,
+    *,
+    text_label_field: str = "name",
+    color_by: Optional[str] = None,
+    hover_fields: Sequence[str] = ("name", "gridRow", "gridCol"),
+    backend: str = "matplotlib",
+    show: bool = True,
+):
+    """
+    Plot child polygons grouped by area root in a grid of subplots.
+
+    Parameters
+    ----------
+    polys : PolygonCollection
+        Polygon feature collection.
+    color_by : str, optional
+        Metadata field used for color grouping.
+    hover_fields : sequence[str]
+        Fields exposed in hover/tooltip text when backend supports it.
+    backend : {"matplotlib", "plotly"}
+        Plot backend.
+    show : bool, default=True
+        Whether to display the figure immediately.
+    """
+    roots = [f for f in polys.features if f.is_area_root]
+    root_by_id = {r.id: r for r in roots}
+    children = [f for f in polys.features if (f.parentId in root_by_id) and (not f.is_metadata)]
+
+    if backend not in {"matplotlib", "plotly"}:
+        raise ValueError("backend must be 'matplotlib' or 'plotly'")
+
+    if color_by is None:
+        color_values: List[str] = []
+    else:
+        color_values = sorted({str(_feature_prop(f, color_by, "")) for f in children})
+    cmap = {}
+    if color_values:
+        palette = [
+            "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+            "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+        ]
+        cmap = {val: palette[idx % len(palette)] for idx, val in enumerate(color_values)}
+
+    if backend == "plotly":
+        try:
+            import plotly.graph_objects as go  # type: ignore
+            from plotly.subplots import make_subplots  # type: ignore
+        except Exception as exc:
+            raise ImportError("plotly backend requested but plotly is not installed.") from exc
+
+        n = max(len(roots), 1)
+        ncols = int(math.ceil(math.sqrt(n)))
+        nrows = int(math.ceil(n / ncols))
+        titles = [r.areaId or r.name or str(r.id) for r in roots] or ["Polygons"]
+        fig = make_subplots(rows=nrows, cols=ncols, subplot_titles=titles)
+        for idx, root in enumerate(roots or [None]):
+            row = idx // ncols + 1
+            col = idx % ncols + 1
+            area_children = children if root is None else [c for c in children if c.parentId == root.id]
+            for feat in area_children:
+                pts = feat.pixel_points
+                if not pts:
+                    continue
+                xs = [p.x for p in pts] + [pts[0].x]
+                ys = [p.y for p in pts] + [pts[0].y]
+                cval = str(_feature_prop(feat, color_by, "")) if color_by else ""
+                color = cmap.get(cval, "#1f77b4")
+                hover_text = "<br>".join(f"{k}: {_feature_prop(feat, k, '')}" for k in hover_fields)
+                fig.add_trace(
+                    go.Scatter(x=xs, y=ys, mode="lines", line={"color": color}, hovertext=hover_text, hoverinfo="text"),
+                    row=row,
+                    col=col,
+                )
+            fig.update_xaxes(visible=False, row=row, col=col)
+            fig.update_yaxes(visible=False, autorange="reversed", row=row, col=col)
+        if show:
+            fig.show()
+        return fig
+
+    import matplotlib.pyplot as plt  # type: ignore
+    from matplotlib.patches import Polygon as MplPolygon  # type: ignore
+    # for this backend we cant hover so we just show the name if color_by is not used
+    n = max(len(roots), 1)
+    ncols = int(math.ceil(math.sqrt(n)))
+    nrows = int(math.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(5 * ncols, 4 * nrows))
+    axes_list = list(axes.flat) if hasattr(axes, "flat") else [axes]
+
+    for ax in axes_list:
+        ax.set_axis_off()
+
+    for idx, root in enumerate(roots or [None]):
+        ax = axes_list[idx]
+        area_children = children if root is None else [c for c in children if c.parentId == root.id]
+        for feat in area_children:
+            pts = feat.pixel_points
+            if not pts:
+                continue
+            vertices = [(p.x, p.y) for p in pts]
+            cval = str(_feature_prop(feat, color_by, "")) if color_by else ""
+            color = cmap.get(cval, "#1f77b4")
+            patch = MplPolygon(vertices, closed=True, fill=False, edgecolor=color, linewidth=1.5)
+            ax.add_patch(patch)
+            if not color_by:
+                cx = sum(x for x, _ in vertices) / len(vertices)
+                cy = sum(y for _, y in vertices) / len(vertices)
+                label_text = str(_feature_prop(feat, text_label_field, ""))
+                ax.text(cx, cy, label_text, ha="center", va="center", fontsize=7)
+
+        if root is not None and root.pixel_points:
+            root_vertices = [(p.x, p.y) for p in root.pixel_points]
+            ax.add_patch(MplPolygon(root_vertices, closed=True, fill=False, edgecolor="black", linewidth=2.0))
+            ax.set_title(str(root.areaId or root.name or root.id))
+        ax.invert_yaxis()
+        ax.autoscale_view()
+
+    for ax in axes_list[len(roots or [None]):]:
+        ax.set_visible(False)
+
+    if show:
+        plt.show()
+    return fig
 
 
 
@@ -3338,3 +3644,17 @@ def iter_cutouts(
         if r is None:
             continue
         yield r
+
+__all__ = [
+    "validate_area_hierarchy",
+    "assert_no_internal_overlaps",
+    "rename_children_row_offset",
+    "print_children_names_by_area",
+    "get_children_nodes_by_area",
+    "check_duplicate_names",
+    "load_geojson_polygons",
+    "CutoutResult",
+    "cutout_polygon_opencv",
+    "cutout_feature_pixels",
+    "iter_cutouts",
+]

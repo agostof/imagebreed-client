@@ -41,6 +41,16 @@ from .mask_transfer import (
 
 # Consolidated legacy domains
 from .api import OrthoCatalog, OrthoAPIClient, fetch_ortho_catalog, build_ortho_url, cutout_areas, load_geojson_polygons
+from .bundle import (
+    BundleEntry,
+    OrthoBundle,
+    download_bundle,
+    use_bundle,
+    use_offline_bundle,
+    active_bundle,
+    active_bundle_path,
+    parse_ortho_file_url,
+)
 from .vegetation import compute_vegetation_indices, reflectance_to_lab, apply_mask
 from .grid import generate_grid, merge_grids, visualize_grid, export_csv, update_field_coords
 from .legacy_compat import (
@@ -89,6 +99,7 @@ __all__ = [
     "save_mask_overlay_png", "save_overlay_rgb", "validate_mask_grid", "extract_area_cutout_and_mask", "run_mask_transfer",
     "build_mask_transfer_config", "run_mask_transfer_pipeline", "run_mask_projection_only",
     "OrthoCatalog", "OrthoAPIClient", "fetch_ortho_catalog", "build_ortho_url", "cutout_areas", "load_geojson_polygons",
+    "BundleEntry", "OrthoBundle", "download_bundle", "use_bundle", "use_offline_bundle", "active_bundle", "active_bundle_path", "parse_ortho_file_url",
     "compute_vegetation_indices", "reflectance_to_lab", "apply_mask",
     "generate_grid", "merge_grids", "visualize_grid", "export_csv", "update_field_coords",
     "_download_to_cache", "cutout_band_by_polygon_URL_REMOTE", "nd_index", "make_veg_mask_ndvi", "clean_mask",

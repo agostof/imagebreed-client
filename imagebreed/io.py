@@ -62,6 +62,11 @@ def download_to_cache(
     str
         Local path to the cached file.
     """
+    import imagebreed.bundle  # absolute import: io.py is also loaded standalone by tests
+    local = imagebreed.bundle.active_bundle_path(url)
+    if local is not None:
+        return str(local)  # bundle hit: skip HTTP entirely, no cache copy
+
     if cache_dir is None:
         cache_dir = os.path.join(tempfile.gettempdir(), "ortho_raster_cache")
     os.makedirs(cache_dir, exist_ok=True)
